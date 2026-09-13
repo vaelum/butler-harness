@@ -532,7 +532,7 @@ exclude    = ["CHANGELOG.md"]     # project-specific additions to the baseline
 | command | what it does |
 | --- | --- |
 | `publish` | export the branch to the mirror |
-| `publish <tag>` | export, then publish a tag on its corresponding public commit |
+| `publish --tag v1.2.3` | export, then publish a tag on its corresponding public commit |
 | `publish --init` | first export into an **empty** mirror; run once |
 | `publish --rehearse` | export into a scratch repo and print the tree; pushes nothing |
 | `publish check` | list what would and would not be published; touches no network |

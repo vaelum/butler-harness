@@ -9,7 +9,7 @@ here is what projects actually consume — keep these sections accurate before
 tagging. `butler.py --version` reports the version in use and the pin the
 project asked for.
 
-## [Unreleased]
+## [0.6.5]
 
 ### Added
 
@@ -38,7 +38,18 @@ project asked for.
 
 - `butler publish --rehearse` runs the export into a scratch bare repository
   and prints the tree, so an exclude list can be verified before anything
-  becomes a permanent public commit.
+  becomes a permanent public commit. It earned its keep immediately: it caught
+  a config that would not parse, a transform Copybara refuses to load without
+  an explicit reversal, and a Markdown glob that silently rewrote nothing.
+
+### Changed
+
+- The harness is published at
+  [github.com/vaelum/butler-harness](https://github.com/vaelum/butler-harness),
+  and `butler new` scaffolds shims pinned there rather than at Forgejo. A shim
+  pinned at a host the reader cannot reach makes a published project
+  unbuildable by anyone but its author. Projects on an older pin keep working
+  and are repointed as they are migrated.
 
 - The export repoints `butler.py`'s harness pin at the public harness on the
   way out (`rewrite_harness`, on by default). A shim pinned at Forgejo makes a

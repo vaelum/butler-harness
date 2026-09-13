@@ -498,7 +498,10 @@ def publish_tag(ctx: Ctx, cfg: PublishConfig, tag: str) -> None:
 
 def node(cfg: PublishConfig) -> Node:
     publish_args = [
-        arg("tag", nargs="?", help="also publish this tag (must be on the branch)"),
+        # A flag, not a positional: `publish` is a branch node (it carries
+        # `check`), and argparse would read a positional here as a subcommand
+        # name and reject any tag as an invalid choice.
+        arg("--tag", help="also publish this tag (must be on the branch)"),
         arg("--init", action="store_true",
             help="first export into an EMPTY mirror; run once"),
         arg("--rehearse", action="store_true",

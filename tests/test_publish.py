@@ -254,6 +254,16 @@ def test_generic_forgejo_links_map_path_for_path():
     assert 'after = "https://github.com/${repo}"' in sky
 
 
+def test_tag_is_a_flag_because_publish_is_a_branch_node():
+    # `publish` carries a `check` child, so a positional tag would be read as a
+    # subcommand name and any real tag rejected as an invalid choice.
+    n = publish.node(parse(BASE).publish)
+    assert [c.name for c in n.children] == ["check"]
+    flags = [f for a in n.args for f in a.flags]
+    assert "--tag" in flags
+    assert not any(f for f in flags if not f.startswith("-"))
+
+
 def test_the_rewrite_can_be_turned_off():
     cfg = parse(BASE + "rewrite_harness = false\n").publish
     assert "butler-harness" not in publish.workflow(cfg, destination="x")
