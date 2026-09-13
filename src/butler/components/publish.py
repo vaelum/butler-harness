@@ -80,6 +80,30 @@ HARNESS_PIN_PATHS = ("butler.py", "src/butler/new.py", "*.md", "**/*.md")
 MD_PATHS = ("*.md", "**/*.md")
 
 
+# Removes the [publish] table from an exported butler.toml: the header, then
+# every following line that does not start a new table. Written without a
+# lookahead on purpose — Copybara matches with RE2, which has none — and as a
+# named constant because the escaping is awkward enough to be worth doing once.
+# The [publish] table: its header, then every following line that does not start
+# a new table. Written without a lookahead on purpose — Copybara matches with
+# RE2, which has none.
+PUBLISH_TABLE_RE = r"\n\[publish\]\n(?:[^\[\n][^\n]*\n|\n)*"
+
+# Starlark rejects an unescaped bracket in a plain string, so the pattern is
+# emitted as a raw string.
+# Wrapped, and IGNORE_NOOP: history predating the [publish] block has nothing to
+# strip, and Copybara treats a transformation that matches no file as an error.
+PUBLISH_TABLE_STRIP = f"""    core.transform([
+        core.replace(
+            before = "${{table}}",
+            after = "",
+            regex_groups = {{"table": r"{PUBLISH_TABLE_RE}"}},
+            paths = glob(["butler/butler.toml"]),
+            multiline = True,
+        ),
+    ], reversal = [], noop_behavior = "IGNORE_NOOP"),"""
+
+
 def _cfg(ctx: Ctx) -> PublishConfig:
     if ctx.cfg.publish is None:
         raise ButlerError(
@@ -158,6 +182,12 @@ def workflow(cfg: PublishConfig, *, destination: str) -> str:
         # A commit message may carry private notes after a line starting with
         # "PRIVATE:"; that line and everything after it is dropped publicly.
         '    metadata.scrubber("(?s)\\nPRIVATE:.*", replacement = ""),',
+        # The [publish] table is export machinery, like copy.bara.sky and
+        # push-public.sh — and it names the private host the mirror is
+        # generated from. The rest of butler.toml says how the project is
+        # built, which is worth publishing, so the table is stripped rather
+        # than the whole file excluded.
+        PUBLISH_TABLE_STRIP,
     ]
     if cfg.rewrite_harness:
         public = f"git+https://github.com/{cfg.harness_github}.git"

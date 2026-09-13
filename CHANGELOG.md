@@ -9,6 +9,21 @@ here is what projects actually consume — keep these sections accurate before
 tagging. `butler.py --version` reports the version in use and the pin the
 project asked for.
 
+## [0.6.6]
+
+### Fixed
+
+- The export strips the `[publish]` table from `butler/butler.toml`. The table
+  is export machinery, like `copy.bara.sky` and `push-public.sh`, and it names
+  the private Forgejo host the mirror is generated from — which is exactly what
+  making `host` required was meant to keep out of published repositories. The
+  rest of the file says how the project is built and still ships.
+
+  Three faults in that one transformation showed up only when a real export
+  loaded it: Starlark rejects an unescaped bracket in a plain string, Copybara
+  matches with RE2 and so has no lookahead, and a transformation matching no
+  file is an error rather than a no-op on history that predates the table.
+
 ## [0.6.5]
 
 ### Added

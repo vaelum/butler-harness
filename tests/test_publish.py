@@ -264,6 +264,29 @@ def test_tag_is_a_flag_because_publish_is_a_branch_node():
     assert not any(f for f in flags if not f.startswith("-"))
 
 
+def test_the_publish_table_is_stripped_from_the_exported_config():
+    # [publish] is export machinery and it names the private host. The rest of
+    # butler.toml describes how the project is built and is worth publishing,
+    # so the table goes rather than the file.
+    sky = publish.workflow(parse(BASE).publish, destination="x")
+    assert 'paths = glob(["butler/butler.toml"])' in sky
+    assert "multiline = True" in sky
+    # Starlark rejects \[ in a plain string, so the pattern must be a raw
+    # string; and Copybara matches with RE2, which has no lookahead.
+    assert 'r"\\n\\[publish' in sky
+    assert "(?=" not in sky, "RE2 has no lookahead"
+
+
+def test_the_strip_pattern_removes_the_table_and_nothing_else():
+    import re
+    pat = publish.PUBLISH_TABLE_RE
+    toml = ('[project]\nname = "x"\n\n[publish]\nforgejo = "a/b"\n'
+            'host = "h"\n\n[app]\nkind = "tauri"\n')
+    out = re.sub(pat, "\n", toml)
+    assert "[publish]" not in out and "host" not in out
+    assert '[project]' in out and '[app]' in out and 'kind = "tauri"' in out
+
+
 def test_the_rewrite_can_be_turned_off():
     cfg = parse(BASE + "rewrite_harness = false\n").publish
     assert "butler-harness" not in publish.workflow(cfg, destination="x")
