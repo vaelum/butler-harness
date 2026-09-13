@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+build/
+dist/
+.pytest_cache/
+
+# Internal planning notes — kept locally, deliberately not published.
+PLAN.md

@@ -1,0 +1,42 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "butler-harness"
+# Single-sourced from butler.__version__: two copies drifted once (0.6.1 shipped
+# reporting 0.6.0), and the number a project sees is the one in the package.
+dynamic = ["version"]
+description = "Shared project harness behind each project's butler.py"
+readme = "README.md"
+# 3.11 for tomllib — every consuming machine is Arch/CachyOS with 3.13, and this
+# keeps the harness free of a tomli dependency (see below).
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+
+# Deliberately EMPTY. The bootstrap shim creates a venv and pip-installs this on
+# a cache miss; every dependency is another thing that can fail on a plane. It
+# also makes BUTLER_HARNESS_PATH (run straight from a working tree, no install)
+# work by simply putting src/ on sys.path.
+dependencies = []
+
+[project.optional-dependencies]
+# Imported lazily, only by the projects that ask for image work (Android
+# launcher-icon safe-zone padding).
+images = ["pillow>=10"]
+dev = ["pytest>=8"]
+
+[project.scripts]
+butler = "butler.__main__:main"
+
+[tool.hatch.version]
+path = "src/butler/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/butler"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Run against the working tree, no install step — the same way
+# BUTLER_HARNESS_PATH runs the harness from a checkout.
+pythonpath = ["src"]

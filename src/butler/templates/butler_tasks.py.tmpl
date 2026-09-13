@@ -1,0 +1,38 @@
+"""Project-specific butler tasks for %%NAME%%.
+
+Anything butler.toml can't express goes here and still shows up under
+`python butler.py --help` alongside the built-in commands.
+
+Handlers are introspected by parameter name: `ctx` is always first, add `args`
+for the parsed flags, and `inner` (wrapping tasks only) for the built-in you
+replaced.
+"""
+
+from butler import arg, task, ui
+
+
+@task("hello", help="a starting point — delete me")
+def hello(ctx):
+    ui.ok("hello from", f"{ctx.name} at {ctx.root}")
+
+
+# A task nested under an existing component:
+#
+# @task("server.claim-token", help="print the first-run claim token")
+# def claim_token(ctx):
+#     from butler.components import compose
+#     token = compose.last_log_value(ctx, ctx.cfg.server.dir, "server", "Claim token:")
+#     if not token:
+#         ui.warn("no claim token in the logs", "— is the server running and unclaimed?")
+#         return 1
+#     ui.ok("claim token:", token)
+#
+#
+# A task that wraps a built-in rather than replacing it:
+#
+# @task("app.android.build", wraps=True,
+#       args=[arg("--skip-prep", action="store_true", help="skip the pre-build step")])
+# def android_build(ctx, args, inner):
+#     if not args.skip_prep:
+#         ctx.check(["scripts/pre-apk.sh"])
+#     return inner()
