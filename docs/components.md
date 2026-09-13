@@ -512,6 +512,7 @@ visibility = "public"             # "public" | "private" — documents intent
 branch     = "main"               # the publication branch
 author     = "dev <dev@example.org>"
 exclude    = ["CHANGELOG.md"]     # project-specific additions to the baseline
+release    = true                 # a tag's CI-built release is copied to the mirror
 ```
 
 | key | type | default | meaning |
@@ -527,12 +528,13 @@ exclude    = ["CHANGELOG.md"]     # project-specific additions to the baseline
 | `port` | int | `2222` | Forgejo SSH port |
 | `rewrite_harness` | bool | `true` | repoint `butler.py`'s pin at the public harness on the way out |
 | `harness_github` | string | `vaelum/butler-harness` | where the public harness lives |
+| `release` | bool | `false` | a tag's release on Forgejo is copied to the mirror — see below. Off by default: most mirrors are plain source, and looking for a release that was never built would fail every tagged export |
 | `harness_forgejo` | string | unset | `owner/name` of the harness on your Forgejo. Set it only if your docs link there — the harness is the one repository whose mirror is renamed, so its link cannot be mapped path-for-path |
 
 | command | what it does |
 | --- | --- |
 | `publish` | export the branch to the mirror |
-| `publish --tag v1.2.3` | export, then publish a tag on its corresponding public commit |
+| `publish --tag v1.2.3` | export, then publish a tag on its corresponding public commit — and, with `release = true`, copy its release |
 | `publish --init` | first export into an **empty** mirror; run once |
 | `publish --rehearse` | export into a scratch repo and print the tree; pushes nothing |
 | `publish check` | list what would and would not be published; touches no network |
@@ -571,6 +573,39 @@ harness, and Forgejo web links in Markdown become their GitHub equivalents —
 `harness_forgejo` first if set, since that mirror is renamed, then the rest
 path-for-path. Your own checkout is untouched,
 so `butler new` run by you still generates a private pin.
+
+### Releases are copied, not rebuilt
+
+The installers are built where the code is private: a `v*` tag pushed to Forgejo
+runs the project's CI, which publishes a Forgejo release with every artifact
+attached. The mirror has no CI of its own — it is generated, and `.forgejo/**`
+is one of the things the export holds back — so `release = true` makes
+`publish --tag` *copy* that release onto the public tag: assets, notes, title
+and the pre-release flag.
+
+```
+git push origin main v1.2.3      # then wait for the build to publish its release
+butler publish --tag v1.2.3
+```
+
+The order is the design. Everything the release needs is fetched and checked
+**before** the export pushes anything, so each of these stops the run with
+nothing published rather than leaving a public tag whose release never arrives:
+
+* the tag is not on Forgejo, or names another commit there than it does locally;
+* its build has not published a release yet, or published a draft;
+* the release has no assets, or one downloads short of the size it lists.
+
+A run that failed partway is simply repeated. A tag already published on the
+right commit is left alone, and a GitHub release that already exists gets only
+the assets it is missing.
+
+Reading the release needs a Forgejo token with `read:repository`, and creating
+the GitHub release needs `gh`, logged in. The token is looked for in the
+environment and then in `~/.secrets` (`SECRETS_FILE` overrides the path), under
+`FORGEJO_TOKEN_READONLY`, `FORGEJO_TOKEN_FOR_<HOST>` and `FORGEJO_TOKEN`, in
+that order — the narrowest first, because this only ever reads. A run says which
+name it used and never what it held.
 
 ### Rehearse before the first real export
 

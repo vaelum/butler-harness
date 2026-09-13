@@ -433,6 +433,7 @@ class PublishConfig:
     author: str                  # every exported commit is authored by this
     committer: str               # ...and committed by this
     exclude: list[str]           # project-specific additions to the baseline
+    release: bool                # a tag's CI-built release is copied to the mirror
     host: str                    # Forgejo host; stated per project, never defaulted
     port: int                    # Forgejo SSH port
     rewrite_harness: bool        # repoint butler.py's pin at the public harness
@@ -582,6 +583,10 @@ def _publish(t: Table | None, project_name: str) -> PublishConfig | None:
         # says so.
         committer=t.str_("committer", author),
         exclude=[str(x) for x in t.list_("exclude", [])],
+        # Off by default: most mirrors are plain source, and a project whose
+        # tags carry no CI-built release would otherwise fail every `--tag` run
+        # looking for one. The projects that do build installers say so.
+        release=t.bool_("release", False),
         # Required, deliberately. Defaulting this would bake one person's
         # server into a harness that is published and meant to be reusable —
         # and would put that hostname in the docs and tests of every copy.

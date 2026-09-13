@@ -295,3 +295,111 @@ def test_the_rewrite_can_be_turned_off():
 def test_generated_config_says_not_to_commit_it():
     sky = publish.workflow(parse(BASE).publish, destination="x")
     assert "do not commit" in sky.lower()
+
+
+# ---- copying the release -------------------------------------------------- #
+
+class Run:
+    """Drives `publish` with everything external replaced, and records the
+    ORDER of what happened — which is the property that matters here."""
+
+    def __init__(self, monkeypatch, tmp_path, toml, *, published=True,
+                 steps=None, **flags):
+        import butler.components.publish as pub
+        from butler import release as release_mod
+        # The caller may pass its own list, so the order is still readable after
+        # a run that raised partway.
+        self.steps: list[str] = [] if steps is None else steps
+        self.cfg = parse(toml).publish
+        self.tmp = tmp_path
+        outer = self
+
+        class FakeCtx:
+            name, root, dry_run, verbose = "demo", tmp_path, False, False
+
+            def would(self, _):
+                return False
+
+            def run(self, cmd, cwd=None):
+                outer.steps.append("export")
+                return 0
+
+        monkeypatch.setattr(pub, "_cfg", lambda ctx: outer.cfg)
+        monkeypatch.setattr(pub, "require_pushed", lambda ctx, c: None)
+        monkeypatch.setattr(pub, "require_tag_pushed",
+                            lambda ctx, c, tag: outer.steps.append("check-tag"))
+        monkeypatch.setattr(pub, "ensure_jar", lambda ctx: tmp_path / "c.jar")
+        monkeypatch.setattr(pub, "_java", lambda: "/usr/bin/java")
+        monkeypatch.setattr(pub, "publish_tag",
+                            lambda ctx, c, tag: (outer.steps.append("push-tag") or published))
+        monkeypatch.setattr(release_mod, "require_gh", lambda: None)
+
+        class FakeRelease:
+            names = ["app.AppImage"]
+
+            def cleanup(self):
+                outer.steps.append("cleanup")
+
+        def fetch(ctx, *, host, repo, tag):
+            outer.steps.append("fetch-release")
+            return FakeRelease()
+
+        monkeypatch.setattr(release_mod, "fetch", fetch)
+        monkeypatch.setattr(release_mod, "mirror",
+                            lambda ctx, rel, github: outer.steps.append("mirror"))
+
+        args = {"rehearse": False, "init": False, "tag": None}
+        args.update(flags)
+        self.rc = pub.publish(FakeCtx(), type("A", (), args)())
+
+
+RELEASING = BASE + "release = true\n"
+
+
+def test_the_release_is_fetched_before_anything_is_exported(monkeypatch, tmp_path):
+    # The whole point of the order: a build still running, or a draft, stops the
+    # run with nothing published — rather than leaving a public tag whose
+    # release never arrives.
+    run = Run(monkeypatch, tmp_path, RELEASING, tag="v1.0")
+    assert run.steps == ["check-tag", "fetch-release", "export", "push-tag",
+                         "mirror", "cleanup"]
+
+
+def test_a_project_without_releases_never_looks_for_one(monkeypatch, tmp_path):
+    # Most mirrors are plain source. Looking for a release that was never built
+    # would fail every tagged export.
+    run = Run(monkeypatch, tmp_path, BASE, tag="v1.0")
+    assert run.steps == ["export", "push-tag"]
+
+
+def test_an_untagged_export_never_looks_for_a_release(monkeypatch, tmp_path):
+    run = Run(monkeypatch, tmp_path, RELEASING)
+    assert run.steps == ["export"]
+
+
+def test_a_tag_that_could_not_be_published_fails_rather_than_dropping_the_release(
+        monkeypatch, tmp_path):
+    # The release is published ON the public tag; without it there is nothing to
+    # attach the installers to, and a zero exit code would hide that.
+    with pytest.raises(ButlerError, match="was not published"):
+        Run(monkeypatch, tmp_path, RELEASING, tag="v1.0", published=False)
+
+
+def test_the_downloaded_assets_are_cleaned_up_even_when_the_run_fails(
+        monkeypatch, tmp_path):
+    steps: list[str] = []
+    with pytest.raises(ButlerError):
+        Run(monkeypatch, tmp_path, RELEASING, tag="v1.0", published=False, steps=steps)
+    # Installers are not left behind in /tmp by a failed publish.
+    assert steps[-1] == "cleanup"
+
+
+def test_a_rehearsal_checks_the_release_but_publishes_nothing(monkeypatch, tmp_path):
+    run = Run(monkeypatch, tmp_path, RELEASING, tag="v1.0", rehearse=True)
+    assert "fetch-release" in run.steps
+    assert "mirror" not in run.steps and "push-tag" not in run.steps
+
+
+def test_release_defaults_to_off():
+    assert parse(BASE).publish.release is False
+    assert parse(RELEASING).publish.release is True

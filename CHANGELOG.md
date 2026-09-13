@@ -9,6 +9,47 @@ here is what projects actually consume — keep these sections accurate before
 tagging. `butler.py --version` reports the version in use and the pin the
 project asked for.
 
+## [0.7.0]
+
+### Added
+
+- `publish --tag` copies the tag's **release** to the mirror when the project
+  sets `release = true`: assets, notes, title and the pre-release flag. The
+  installers are built where the code is private — a `v*` tag runs the
+  project's Forgejo CI — and the mirror has no CI of its own, since a workflow
+  file is one of the things the export holds back. So the public release is not
+  built again, it is copied.
+
+  This was the last thing `push-public.sh` did that the component could not,
+  and the reason seven projects still carried a ~300-line script next to a
+  ten-line `[publish]` block.
+
+  The order is the design: the release is fetched and checked *before* the
+  export pushes anything. A build still running, a draft, an empty release, or
+  a tag on Forgejo naming another commit than the local one each stops the run
+  with nothing published — rather than leaving a public tag whose release never
+  arrives. A run that failed partway is simply repeated: a tag already on the
+  right commit is left alone, and an existing GitHub release gets only the
+  assets it is missing.
+
+- `butler.secrets`: reading an API token from the environment or the machine's
+  `~/.secrets` (`SECRETS_FILE` overrides the path). The file is parsed, never
+  sourced — it is a list of `KEY=value` lines, and sourcing would execute
+  whatever else ended up in it — and values never reach the terminal: a run
+  says which NAME it used, so a wrong token surfaces as the service's own 401.
+
+  For Forgejo the read-only name is tried first, then one named for the host
+  (`FORGEJO_TOKEN_FOR_GIT_EXAMPLE_ORG`), then `FORGEJO_TOKEN`; an explicit
+  export always beats the file. Copying a release only ever *reads* from
+  Forgejo, so it has no business holding a writable token when a narrower one
+  exists.
+
+### Fixed
+
+- An asset download that Forgejo redirects to its object storage no longer
+  carries the Forgejo token to that other host. urllib re-sends every header
+  across a redirect; `curl`, which the shell script used, drops it.
+
 ## [0.6.6]
 
 ### Fixed

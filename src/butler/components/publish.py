@@ -26,7 +26,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-from .. import proc, ui
+from .. import proc, release as release_mod, ui
 from ..command import Node, arg
 from ..config import PublishConfig
 from ..context import Ctx
@@ -333,6 +333,35 @@ def require_pushed(ctx: Ctx, cfg: PublishConfig) -> None:
                  f"  git push origin {cfg.branch}")
 
 
+def require_tag_pushed(ctx: Ctx, cfg: PublishConfig, tag: str) -> None:
+    """The release was built by CI from the tag *on Forgejo*, so a local tag
+    that differs — moved, or never pushed — would mirror installers built from
+    other code than the commit about to be published."""
+    if ctx.dry_run:
+        return
+    ours = proc.capture(["git", "rev-parse", "-q", "--verify", f"refs/tags/{tag}^{{commit}}"],
+                        cwd=ctx.root)
+    if not ours.ok:
+        raise ButlerError(f"tag '{tag}' does not exist")
+    listing = proc.capture(["git", "ls-remote", "origin", f"refs/tags/{tag}",
+                            f"refs/tags/{tag}^{{}}"], cwd=ctx.root)
+    theirs = ""
+    for line in listing.out.splitlines():
+        sha, _, ref = line.partition("\t")
+        # An annotated tag is listed twice; the ^{} line is the commit it names.
+        if ref.strip() == f"refs/tags/{tag}^{{}}":
+            theirs = sha.strip()
+        elif ref.strip() == f"refs/tags/{tag}" and not theirs:
+            theirs = sha.strip()
+    if not theirs:
+        raise ButlerError(
+            f"tag '{tag}' is not on Forgejo",
+            hint=f"Push it and let its build publish the release:\n  git push origin {tag}")
+    if theirs != ours.out.strip():
+        raise ButlerError(f"tag '{tag}' on Forgejo names {theirs[:12]}, "
+                          f"not the local {ours.out.strip()[:12]}")
+
+
 # --------------------------------------------------------------------------- #
 # actions
 # --------------------------------------------------------------------------- #
@@ -387,6 +416,11 @@ def check(ctx: Ctx, args) -> int:
     ui.plain(ui.bold("  exclude patterns"))
     for pattern in excludes(cfg):
         ui.plain(ui.dim(f"    {pattern}"))
+    if cfg.release:
+        ui.plain()
+        ui.plain(ui.bold("  releases"))
+        ui.plain(ui.dim(f"    a tag's release on {cfg.host}/{cfg.forgejo} is copied "
+                        f"to github.com/{cfg.github}"))
     # A public export that ships no exclusions at all is usually a project that
     # has not thought about it yet, rather than one with nothing to hide.
     if cfg.is_public and not held:
@@ -397,7 +431,27 @@ def check(ctx: Ctx, args) -> int:
 def publish(ctx: Ctx, args) -> int:
     cfg = _cfg(ctx)
     run = _destination(ctx, cfg, args)
+    tag = getattr(args, "tag", None)
     require_pushed(ctx, cfg)
+
+    # Everything the release needs is fetched and checked FIRST, before the
+    # export pushes a single commit. A build still running, a draft, a release
+    # whose tag names another commit — each stops the run with nothing
+    # published, rather than leaving a public tag whose release never arrives.
+    rel: release_mod.Release | None = None
+    if tag and cfg.release:
+        release_mod.require_gh()
+        require_tag_pushed(ctx, cfg, tag)
+        rel = release_mod.fetch(ctx, host=cfg.host, repo=cfg.forgejo, tag=tag)
+    try:
+        return _export(ctx, cfg, args, run, tag, rel)
+    finally:
+        if rel is not None:
+            rel.cleanup()
+
+
+def _export(ctx: Ctx, cfg: PublishConfig, args, run: _Run,
+            tag: str | None, rel: release_mod.Release | None) -> int:
     jar, java = ensure_jar(ctx), _java()
 
     scratch = Path(tempfile.mkdtemp(prefix=f"butler-publish-cfg-{ctx.name}-"))
@@ -432,21 +486,34 @@ def publish(ctx: Ctx, args) -> int:
             ui.plain(ui.bold("  the exported tree"))
             for f in listing.out.splitlines():
                 ui.plain(f"    {f}")
+        if rel is not None:
+            ui.plain(ui.bold(f"  the release {tag} would carry"))
+            for name in rel.names:
+                ui.plain(f"    {name}")
         ui.note("Nothing was pushed to GitHub. Read the tree above before a real run.")
         return 0
 
-    tag = getattr(args, "tag", None)
     if tag:
-        publish_tag(ctx, cfg, tag)
+        if not publish_tag(ctx, cfg, tag) and rel is not None:
+            # The release is published ON the public tag, so there is nothing to
+            # put it on. Fail rather than leave the installers un-mirrored with
+            # a zero exit code.
+            raise ButlerError(f"tag '{tag}' was not published, so its release was not either")
+        if rel is not None:
+            release_mod.mirror(ctx, rel, github=cfg.github)
     return 0
 
 
-def publish_tag(ctx: Ctx, cfg: PublishConfig, tag: str) -> None:
+def publish_tag(ctx: Ctx, cfg: PublishConfig, tag: str) -> bool:
     """Publish one private tag on the public commit that corresponds to it.
 
     Copybara gives every exported commit a `GitOrigin-RevId` trailer naming the
     private commit it came from, which is the only way back: public SHAs are
     rebuilt and share nothing with the private ones.
+
+    Returns whether the tag is now on the mirror — a tag with no exact public
+    equivalent is a warning here and a hard failure for the caller copying a
+    release, which would have nothing to attach it to.
     """
     root, url = ctx.root, cfg.destination_url
 
@@ -499,7 +566,7 @@ def publish_tag(ctx: Ctx, cfg: PublishConfig, tag: str) -> None:
         short = proc.capture(["git", "rev-parse", "--short", source], cwd=root).out.strip()
         ui.warn("warning:", f"'{tag}' has no exact public equivalent "
                             f"(nearest export is {short}); not publishing it")
-        return
+        return False
 
     # A published tag is never moved by accident. One already on the right
     # commit is left alone, so a run that failed after pushing it can simply be
@@ -518,10 +585,11 @@ def publish_tag(ctx: Ctx, cfg: PublishConfig, tag: str) -> None:
             raise ButlerError(
                 f"tag '{tag}' already exists publicly, on another commit ({published[:12]})")
         ui.ok(f"{tag} is already published")
-        return
+        return True
 
     ctx.check(["git", "push", url, f"{target}:refs/tags/{tag}"])
     ui.ok(f"published {tag}", f"-> {target[:12]}")
+    return True
 
 
 # --------------------------------------------------------------------------- #
@@ -531,7 +599,8 @@ def node(cfg: PublishConfig) -> Node:
         # A flag, not a positional: `publish` is a branch node (it carries
         # `check`), and argparse would read a positional here as a subcommand
         # name and reject any tag as an invalid choice.
-        arg("--tag", help="also publish this tag (must be on the branch)"),
+        arg("--tag", help="also publish this tag (must be on the branch)"
+                          + (", and copy its release" if cfg.release else "")),
         arg("--init", action="store_true",
             help="first export into an EMPTY mirror; run once"),
         arg("--rehearse", action="store_true",
