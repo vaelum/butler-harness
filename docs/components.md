@@ -334,7 +334,11 @@ Before configuring, `[project] submodules` and `git_deps` are honoured — a sta
 submodule is a compile error a long way from its cause.
 
 With `--test`, ctest writes JUnit to `<build_dir>/test-results.xml` (CI reads it
-from there), and `--test-filter` is forwarded as `ctest -R`.
+from there), and `--test-filter` is forwarded as `ctest -R`. The path handed to
+`--output-junit` is always **absolute** — the project root on the host, the
+buildenv's `workdir` under `--docker` — because `ctest --preset` runs in the
+preset's binary directory, so a relative one would be resolved against that and
+land a level deeper than anything looks for.
 
 ### `[[build.option]]` — a build switch
 
@@ -613,3 +617,107 @@ name it used and never what it held.
 prints the resulting tree. It is the only thing standing between an incomplete
 exclude list and a permanent public commit, and it costs one command. Setting
 `PUBLIC_URL` has the same effect, pointed wherever you like.
+
+## `[release]` — cut a version and take it out
+
+Does the whole cycle in one command: put the work branch on the publication
+branch as **one** commit, tag it, push to Forgejo, wait for the build that
+publishes the release, then hand over to `publish` for the export, the public
+tag and the copy of that release onto the mirror.
+
+```toml
+[release]
+source        = "dev"               # the branch the work happens on
+into          = "main"              # the branch a release is merged into
+tag_prefix    = "v"                 # version 1.2.3 is tagged v1.2.3
+message       = "{project} {version}"   # subject of the squash commit and the tag
+changelog     = "CHANGELOG.md"      # where this version's notes live; "" to skip
+version_files = ["pyproject.toml"]  # files whose version must match the tag
+timeout       = 3600                # seconds to wait for the build
+```
+
+| key | type | default | meaning |
+| --- | --- | --- | --- |
+| `source` | string | `dev` | the branch the work happens on; it is never rewritten |
+| `into` | string | `[publish] branch` | the publication branch. Must be the exported one — a release merged anywhere else never reaches the mirror, so stating a different branch is an error rather than a surprise |
+| `tag_prefix` | string | `v` | `release 1.2.3` and `release v1.2.3` both mean the same tag |
+| `message` | string | `{project} {version}` | subject of the squash commit and the annotated tag. Placeholders: `{project}`, `{version}`, `{tag}` |
+| `changelog` | string | `CHANGELOG.md` | the file whose section for this version must exist. `""` turns the check off |
+| `version_files` | list | `[]` | files that must declare the version being cut — `version = "1.2.3"`, `"version": "1.2.3"` and `__version__ = "1.2.3"` all count |
+| `wait` | bool | `true` | wait for the Forgejo build before exporting |
+| `timeout` | int | `3600` | how long to wait for it |
+| `poll` | int | `20` | seconds between polls |
+| `workflow` | string | unset | wait on this one workflow (`build.yml`) instead of every one the tag started |
+
+| command | what it does |
+| --- | --- |
+| `release 1.2.3` | the whole cycle |
+| `release 1.2.3 --check` | print the plan and stop; changes nothing, anywhere |
+| `release 1.2.3 --retag` | re-cut a version whose build failed — see below |
+| `release 1.2.3 --from export` | resume from a step (`merge`, `tag`, `push`, `wait`, `export`) |
+| `release 1.2.3 --no-wait` | push and stop; run `publish --tag` yourself once the build is green |
+| `release 1.2.3 --no-export` | stop after the build; leave the mirror alone |
+
+### The release commit is a tree copy, not a merge
+
+What lands on the publication branch is the work branch's tree, whole, as one
+commit whose parent is that branch's previous release. It is built with
+`git commit-tree` rather than `git merge --squash`, which matters twice.
+
+A publication branch is often **unrelated** to the work branch — butler's own
+`main` is an orphan, because the published history was started fresh rather
+than carrying the private one — and `git merge --squash` refuses that outright
+("refusing to merge unrelated histories"). A tree copy does not care.
+
+And working in plumbing means nothing is ever checked out. The publication
+branch is written by `update-ref`, so your working tree is not switched, not
+reset and not restored afterwards: an ignored build directory that costs an
+hour to rebuild is still there when the release is out. The one thing that
+cannot work is cutting a release *from* the publication branch — moving the
+branch under its own index — and that is refused in the preflight.
+
+### Everything is checked before anything moves
+
+Nothing in the preflight writes, so a run that stops in it has changed nothing
+on the machine and nothing on either forge:
+
+- the working tree is clean, and `source` is pushed — the build and the export
+  both read Forgejo, so work left behind here would be missing from the release
+  without anything failing;
+- the CHANGELOG has a section for this version. CI reads the same file to write
+  the release notes, and discovering it empty there has already cost a tag, a
+  push and a build;
+- every file in `version_files` declares this version;
+- `into` is where origin has it — that branch is written by releases only, so
+  a local commit on it is a mistake worth stopping for;
+- the tag does not already exist.
+
+Then the plan is printed and confirmed (`--yes` for an unattended run).
+
+### A failed build can be re-cut
+
+A build that failed published nothing, so the version number is still free:
+
+```
+butler.py release 1.2.3            # …the build fails
+git commit -am 'fix the build'     # on dev
+git push origin dev
+butler.py release 1.2.3 --retag
+```
+
+The squash commit is rebuilt from the fixed work branch, the tag moves onto it,
+and both are force-pushed — the branch is force-pushed *with lease*, so a commit
+someone else put on it since the fetch aborts the push rather than disappearing.
+The publication branch still gains exactly one commit for the release, which is
+what keeps a generated public history readable.
+
+It stops being safe the moment anything has been published under that tag, and
+`--retag` refuses there: a tag whose Forgejo release exists, or whose commit is
+already on the mirror, is spent — moving it would leave a published release
+describing a commit nobody can check out, and whoever downloaded it holding
+artifacts built from code that is no longer anywhere. Cut the next version
+instead.
+
+The rewind is equally narrow: the only commit it will discard is the release
+commit butler itself made. A publication branch sitting on anything else stops
+the run rather than losing whatever is there.

@@ -203,10 +203,31 @@ def test_docker_build_mounts_the_tree_and_runs_one_script(tmp_path, capsys):
     assert f"docker build -t demo-buildenv -f {tmp_path}/building/buildenv.Dockerfile" in out
     assert f"-v {tmp_path}:/demo -w /demo" in out
     assert "--network host -e DEMO_TEST_INTEGRATION=1" in out
+    # The JUnit path is ABSOLUTE inside the container, and this assertion is the
+    # point of the test rather than a detail of it. `ctest --preset` runs in the
+    # preset's binary directory, so a relative --output-junit is resolved
+    # against THAT: asking for `builds/release/test-results.xml` wrote the
+    # report to `builds/release/builds/release/test-results.xml` and every CI
+    # job that uploads it found nothing. ctest creates the directories and exits
+    # 0, so nothing failed -- it just silently stopped producing test results.
     assert ("cmake --preset release -DDEMO_WITH_SFTP=ON -DDEMO_WITH_S3=ON && "
             "cmake --build --preset release --parallel 4 && "
-            "mkdir -p $(dirname builds/release/test-results.xml) && "
-            "ctest --preset release -j 4 --output-junit builds/release/test-results.xml") in out
+            "mkdir -p $(dirname /demo/builds/release/test-results.xml) && "
+            "ctest --preset release -j 4 "
+            "--output-junit /demo/builds/release/test-results.xml") in out
+
+
+def test_docker_junit_path_is_absolute(tmp_path, capsys):
+    """A relative one lands under the binary dir, where nothing looks for it.
+
+    Kept separate from the assertion above so the reason survives a rewrite of
+    that command string: what matters is not the exact path but that it starts
+    at the container's workdir.
+    """
+    cmake_component.build(make_ctx(tmp_path), build_args(docker=True, test=True))
+    out = echoed(capsys)
+    junit = out.split("--output-junit ", 1)[1].split()[0]
+    assert junit.startswith("/demo/"), junit
 
 
 def test_docker_needs_the_section(tmp_path, capsys):

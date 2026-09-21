@@ -9,6 +9,73 @@ here is what projects actually consume — keep these sections accurate before
 tagging. `butler.py --version` reports the version in use and the pin the
 project asked for.
 
+## [0.8.0]
+
+### Added
+
+- **`release` — the whole cycle, in one command.** A project with a `[release]`
+  section gets `butler.py release 1.2.3`, which does what every release here
+  was doing by hand: put the work branch on the publication branch as one
+  commit, tag it, push to Forgejo, wait for the build that publishes the
+  release, then export the tag to the mirror and copy that release onto it.
+
+  That commit is a tree copy (`git commit-tree`), not a `git merge --squash`.
+  A publication branch is often unrelated to the work branch — butler's own
+  `main` is an orphan — and merge refuses that outright. It also means nothing
+  is checked out: the branch is written with `update-ref`, so the working tree
+  the release was cut from is untouched, and there is nothing to restore if a
+  run stops halfway.
+
+  The steps were never the hard part; the order is. Exporting before the build
+  finishes puts a public tag on the mirror whose release never arrives, and
+  tagging a version whose CHANGELOG entry was forgotten produces a release
+  nobody can read — which is how chords came to ship `v2026.9.2` twice. So the
+  notes, the version strings, the pushed state of the work branch and the state
+  of the tag are all checked **before** anything moves, and `--check` prints the
+  whole plan without touching a thing.
+
+- **`release --retag`: re-cut a version whose build failed.** A failed build has
+  published nothing, so the version number is still free. Fix it, commit on the
+  work branch, and re-cut the same version: the squash commit is rebuilt from
+  the fixed branch, the tag moves onto it, and both are force-pushed. The
+  publication branch still gains exactly **one** commit for the release, which
+  is the property that makes a generated public history readable at all.
+
+  It refuses the moment that stops being safe. A tag whose Forgejo release
+  exists, or whose commit is already on the mirror, is spent: moving it would
+  leave a published release describing a commit nobody can check out. The
+  branch is only ever rewound past the release commit butler itself made — one
+  sitting on anything else stops the run.
+
+- `wait_for_build` in `release.py`, which polls the Forgejo Actions API for the
+  runs a tag started. It matches on the ref *and* the commit (a moved tag has
+  old runs under the same name), takes the newest run of each workflow (so a
+  re-run replaces the failure it re-ran), and says the state only when it
+  changes.
+
+## [0.7.1]
+
+### Fixed
+
+- **A `--docker` build's JUnit report went to a path nothing reads**, so every
+  CI job that uploads test results uploaded none. The buildenv script handed
+  `ctest` a RELATIVE `--output-junit`, and `ctest --preset` runs in the
+  preset's binary directory rather than the shell's working directory — so a
+  report asked for at `builds/release/test-results.xml` was written to
+  `builds/release/builds/release/test-results.xml`.
+
+  It failed silently in both directions: ctest creates the missing directories
+  and exits 0, and the upload step on the other side is usually configured
+  `if-no-files-found: warn`, so a green job uploaded nothing and said so only
+  in a log line. In yeet it had been doing that for 55 consecutive runs, and
+  the sanitizer nightlies had never once produced the results they exist to
+  produce.
+
+  The path is now absolute inside the container (`<workdir>/<build_dir>/…`),
+  which is what the HOST path always passed — `_build_on_host` uses
+  `cfg.preset_dir(...)` and so never had the bug. Projects consuming this get
+  their test results back with no change on their side beyond the pin.
+
 ## [0.7.0]
 
 ### Added

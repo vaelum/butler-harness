@@ -454,6 +454,34 @@ class PublishConfig:
 
 
 @dataclass
+class ReleaseConfig:
+    """How a version of this project is cut, built and published.
+
+    The steps this describes are the ones every release of every project here
+    already went through by hand — squash the work branch into the publication
+    branch, tag it, push, wait for the build, export — so what a project states
+    is only where its own branches and version strings live.
+    """
+    source: str                  # the branch the work happens on
+    into: str                    # the branch a release is squash-merged into
+    tag_prefix: str              # "v" -> version 1.2.3 is tagged v1.2.3
+    message: str                 # subject of the squash commit and the tag
+    changelog: str | None        # the file a version's notes are read from
+    version_files: list[str]     # files whose version must match the tag
+    wait: bool                   # wait for the Forgejo build before exporting
+    timeout: int                 # seconds to wait for it
+    poll: int                    # seconds between polls
+    workflow: str | None         # the one workflow that must pass, if not all
+
+    def tag_for(self, version: str) -> str:
+        return f"{self.tag_prefix}{version}"
+
+    def subject(self, project: str, version: str) -> str:
+        return self.message.format(project=project, version=version,
+                                   tag=self.tag_for(version))
+
+
+@dataclass
 class ProjectConfig:
     name: str
     dist: Path
@@ -471,6 +499,7 @@ class Config:
     build: BuildConfig | None = None
     check: CheckConfig | None = None
     publish: PublishConfig | None = None
+    release: ReleaseConfig | None = None
     # Sections that parsed as "planned but unimplemented"; the CLI turns each
     # into a command that says so rather than pretending it doesn't exist.
     planned: dict[str, str] = field(default_factory=dict)
@@ -543,6 +572,7 @@ def parse(raw: dict, root: Path) -> Config:
     build = _build(top.table("build"), root, project.name)
     check = _check(top.table("check"), root, project.name)
     publish = _publish(top.table("publish"), project.name)
+    release = _release(top.table("release"), publish)
 
     planned = {}
     for name, milestone in PLANNED_SECTIONS.items():
@@ -552,7 +582,7 @@ def parse(raw: dict, root: Path) -> Config:
 
     return Config(root=root, project=project, app=app, server=server,
                   extension=extension, build=build, check=check, publish=publish,
-                  planned=planned)
+                  release=release, planned=planned)
 
 
 def _publish(t: Table | None, project_name: str) -> PublishConfig | None:
@@ -597,6 +627,51 @@ def _publish(t: Table | None, project_name: str) -> PublishConfig | None:
         harness_forgejo=t.str_("harness_forgejo", None),
     )
     t.done()
+    return cfg
+
+
+def _release(t: Table | None, publish: PublishConfig | None) -> ReleaseConfig | None:
+    if t is None:
+        return None
+    # The publication branch is stated in [publish] when there is one, and a
+    # release that merged into a different branch than the one exported would
+    # publish nothing. So it is followed rather than asked for twice.
+    into_default = publish.branch if publish is not None else "main"
+    cfg = ReleaseConfig(
+        source=t.str_("source", "dev"),
+        into=t.str_("into", into_default),
+        tag_prefix=t.str_("tag_prefix", "v"),
+        message=t.str_("message", "{project} {version}"),
+        # A release with no notes is a release nobody can read, so the file is
+        # required by default and only an explicit "" turns the check off.
+        changelog=t.str_("changelog", "CHANGELOG.md") or None,
+        version_files=[str(x) for x in t.list_("version_files", [])],
+        wait=t.bool_("wait", True),
+        timeout=t.int_("timeout", 3600),
+        poll=t.int_("poll", 20),
+        workflow=t.str_("workflow", None),
+    )
+    t.done()
+    if publish is not None and cfg.into != publish.branch:
+        raise ConfigError(
+            f"[release] 'into' is {cfg.into!r} but [publish] exports "
+            f"{publish.branch!r}",
+            hint="A release merged into a branch that is never exported would\n"
+                 "never reach the mirror. Make the two the same.")
+    if cfg.source == cfg.into:
+        raise ConfigError(
+            f"[release] 'source' and 'into' are both {cfg.source!r}",
+            hint="A release squashes the work branch into the publication\n"
+                 "branch; they cannot be the same branch.")
+    for key, value in (("timeout", cfg.timeout), ("poll", cfg.poll)):
+        if value <= 0:
+            raise ConfigError(f"[release] '{key}' must be a positive number of seconds")
+    try:
+        cfg.message.format(project="p", version="1.0", tag="v1.0")
+    except (KeyError, IndexError) as e:
+        raise ConfigError(
+            f"[release] 'message' uses an unknown placeholder: {e}",
+            hint="Available: {project}, {version}, {tag}.") from e
     return cfg
 
 

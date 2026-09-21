@@ -1,4 +1,4 @@
-"""Copying a release built on Forgejo onto the GitHub mirror.
+"""The Forgejo side of a release: the build that produces it, and copying it.
 
 The installers are built where the code is private: a `v*` tag pushed to Forgejo
 runs the project's CI, which publishes a Forgejo release with every artifact
@@ -20,6 +20,7 @@ obvious from the code:
 from __future__ import annotations
 
 import json
+import time
 import re
 import tempfile
 import urllib.error
@@ -205,6 +206,135 @@ def mirror(ctx: Ctx, rel: Release, *, github: str) -> None:
     # so a half-uploaded release is never visible.
     ctx.check([*cmd, *rel.assets], what="create the GitHub release")
     ui.ok(f"published GitHub release {rel.tag}", f"-> {github}")
+
+
+# --------------------------------------------------------------------------- #
+# the build that produces the release
+# --------------------------------------------------------------------------- #
+
+# Forgejo's own vocabulary. Anything not listed is treated as still going,
+# which is the safe way round: an unknown state that turns out to be terminal
+# costs a wait, while guessing "done" would export a build that never finished.
+PENDING = ("waiting", "running", "blocked", "unknown", "")
+SUCCESS = "success"
+
+
+@dataclass
+class Run:
+    """One Forgejo Actions run of one workflow."""
+    id: int
+    workflow: str
+    status: str
+    url: str
+
+    @property
+    def done(self) -> bool:
+        return self.status not in PENDING
+
+    @property
+    def ok(self) -> bool:
+        return self.status == SUCCESS
+
+
+def runs_for(host: str, repo: str, tag: str, sha: str, tok: str,
+             workflow: str | None = None) -> list[Run]:
+    """The newest run of each workflow triggered by `tag`.
+
+    A run is matched on the ref *and* on the commit, because both can be right
+    on their own and wrong together: a moved tag has old runs under the same
+    name, and the same commit may also have been built on a branch.
+
+    Only the newest run per workflow counts — re-running a failed job is how a
+    flake is dealt with, and the earlier failure must not keep failing the wait
+    forever after it has been re-run green.
+    """
+    url = (f"https://{host}/api/v1/repos/{repo}/actions/runs"
+           f"?limit=50&event=push")
+    try:
+        payload = json.loads(_get(url, tok))
+    except urllib.error.HTTPError as e:
+        raise ButlerError(f"could not list the builds of {repo}: HTTP {e.code}",
+                          hint="Does the token have read access to actions?") from e
+    except OSError as e:
+        raise ButlerError(f"could not reach {host}: {e}") from e
+
+    newest: dict[str, Run] = {}
+    for item in payload.get("workflow_runs") or []:
+        if item.get("prettyref") != tag or item.get("commit_sha") != sha:
+            continue
+        name = item.get("workflow_id") or "?"
+        if workflow is not None and name != workflow:
+            continue
+        run = Run(id=int(item.get("id") or 0), workflow=name,
+                  status=item.get("status") or "", url=item.get("html_url") or "")
+        if name not in newest or run.id > newest[name].id:
+            newest[name] = run
+    return sorted(newest.values(), key=lambda r: r.workflow)
+
+
+def wait_for_build(ctx: Ctx, *, host: str, repo: str, tag: str, sha: str,
+                   timeout: int, poll: int, workflow: str | None = None) -> None:
+    """Block until every workflow the tag started has finished, and succeeded.
+
+    The release is built by that build, so exporting before it lands would put
+    a public tag on the mirror whose release never arrives — the same failure
+    the release copy is careful to avoid, one step earlier.
+    """
+    if ctx.would(f"wait for the {tag} build on {host}/{repo}"):
+        return
+    tok = token(host)
+    actions = f"https://{host}/{repo}/actions"
+    ui.plain(ui.bold(f"the {tag} build on {host}/{repo}"))
+    deadline = time.monotonic() + timeout
+    said = ""
+    while True:
+        runs = runs_for(host, repo, tag, sha, tok, workflow)
+        # Say the state only when it changes: a poll every 20 seconds for an
+        # hour would otherwise bury whatever the build itself prints.
+        state = ", ".join(f"{r.workflow} {r.status}" for r in runs) or "not started yet"
+        if state != said:
+            ui.plain(ui.dim(f"  {state}"))
+            said = state
+        if runs and all(r.done for r in runs):
+            failed = [r for r in runs if not r.ok]
+            if not failed:
+                ui.ok(f"the {tag} build passed", f"({len(runs)} workflow(s))")
+                return
+            names = ", ".join(f"{r.workflow} ({r.status})" for r in failed)
+            raise ButlerError(
+                f"the {tag} build failed: {names}",
+                hint=f"{failed[0].url or actions}\n"
+                     f"Fix it, commit on the work branch, and re-cut the same\n"
+                     f"version with --retag: the tag moves to a fresh squash\n"
+                     f"commit and the build runs again. Nothing has been\n"
+                     f"published yet.")
+        if time.monotonic() >= deadline:
+            raise ButlerError(
+                f"the {tag} build has not finished after {timeout}s",
+                hint=f"{actions}\n"
+                     f"Raise [release] timeout, or watch it there and then run\n"
+                     f"the export on its own.")
+        time.sleep(poll)
+
+
+def published(host: str, repo: str, tag: str) -> bool:
+    """Whether Forgejo already has a release for `tag`.
+
+    This is the line a re-cut must not cross. Moving a tag whose release is
+    already out would leave that release describing a commit that no longer
+    exists, and anyone who downloaded it holding artifacts built from code
+    nobody can check out.
+    """
+    api = f"https://{host}/api/v1/repos/{repo}/releases/tags/{urllib.parse.quote(tag)}"
+    try:
+        _get(api, token(host))
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return False
+        raise ButlerError(f"could not check the release for '{tag}': HTTP {e.code}") from e
+    except OSError as e:
+        raise ButlerError(f"could not reach {host}: {e}") from e
+    return True
 
 
 def require_gh() -> None:

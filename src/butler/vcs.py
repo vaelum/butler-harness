@@ -88,10 +88,13 @@ def ensure_git_deps(root: Path, deps: list[dict], *, dry_run: bool = False) -> N
                    cwd=dest, what=f"submodules of {dep['path']}")
 
 
-def require_clean(root: Path) -> None:
-    """Refuse to proceed with uncommitted changes. Not used by default — it's
-    here for projects that want a release task to insist on it."""
+def require_clean(root: Path, hint: str = "commit or stash them first") -> None:
+    """Refuse to proceed with uncommitted changes.
+
+    The hint is the caller's, because what to do about it is: a release wants
+    the change committed on the work branch and pushed, while another caller
+    may be happy for it to be stashed.
+    """
     r = proc.capture(["git", "status", "--porcelain"], cwd=root)
     if r.ok and r.out.strip():
-        raise ButlerError("the working tree has uncommitted changes",
-                          hint="commit or stash them, or re-run with --dirty")
+        raise ButlerError("the working tree has uncommitted changes", hint=hint)

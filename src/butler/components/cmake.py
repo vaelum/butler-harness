@@ -207,8 +207,22 @@ def build(ctx: Ctx, args) -> int:
     return 0
 
 
-def _results_file(build_dir: str) -> str:
-    return f"{build_dir}/{RESULTS_NAME}"
+def _results_file(workdir: str, build_dir: str) -> str:
+    """The JUnit report's path INSIDE the buildenv container, absolute.
+
+    Absolute, and that is the whole point of this function existing. `ctest
+    --preset` runs in the preset's binary directory, so a RELATIVE
+    --output-junit is resolved against THAT rather than against the shell's
+    working directory -- and a report asked for at `builds/x/test-results.xml`
+    landed at `builds/x/builds/x/test-results.xml`, a path nothing looks for.
+    Silently: ctest creates the directories and exits 0, so the only symptom is
+    a CI job that uploads no test results and warns about it in a log nobody
+    reads.
+
+    The host path never had the bug because it always passed an absolute path
+    (`cfg.preset_dir(...)`), which is why this only ever affected --docker.
+    """
+    return f"{workdir}/{build_dir}/{RESULTS_NAME}"
 
 
 def _build_on_host(ctx: Ctx, cfg: BuildConfig, preset: str, args) -> None:
@@ -258,7 +272,7 @@ def _build_in_docker(ctx: Ctx, cfg: BuildConfig, preset: str, args) -> None:
     steps = [f"cmake --preset {preset} {defines}".rstrip(),
              f"cmake --build --preset {preset} --parallel {cfg.jobs}"]
     if args.test:
-        results = _results_file(build_dir)
+        results = _results_file(buildenv.workdir, build_dir)
         ctest = (f"ctest --preset {preset} -j {cfg.jobs} --output-junit {results}")
         if args.test_filter:
             ctest += f" -R '{args.test_filter}'"

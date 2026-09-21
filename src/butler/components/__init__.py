@@ -10,6 +10,7 @@ def tree(cfg: Config) -> list[Node]:
     """The command tree implied by a project's configuration."""
     from . import cmake, extension, lint
     from . import publish as publish_component
+    from . import release_cycle
     from . import server as server_component
     from . import tauri
 
@@ -26,4 +27,6 @@ def tree(cfg: Config) -> list[Node]:
         nodes.append(lint.node(cfg.check, cfg.build))
     if cfg.publish:
         nodes.append(publish_component.node(cfg.publish))
+    if cfg.release:
+        nodes.append(release_cycle.node(cfg.release, cfg.publish))
     return nodes

@@ -21,7 +21,8 @@ reference for what a migrated project looks like.
 Implemented components: `app` (Tauri desktop + Android), `server` (FastAPI,
 Compose or the project's own scripts), `extension` (Chrome + Firefox bundles),
 `build` (CMake + Docker buildenv), `check` (MegaLinter + clang-tidy),
-`publish` (Copybara export to a public mirror), plus `doctor`.
+`publish` (Copybara export to a public mirror), `release` (squash, tag, wait
+for the build, export), plus `doctor`.
 
 - [docs/new-project.md](docs/new-project.md) — adding a butler to a project
 - [docs/components.md](docs/components.md) — every config key and command
@@ -44,6 +45,7 @@ butler.py app build --bundles appimage
 butler.py app android build --debug --install --logcat
 butler.py server dev | down | logs | test | deploy
 butler.py extension package
+butler.py release 1.2.3 --check
 butler.py doctor
 ```
 
