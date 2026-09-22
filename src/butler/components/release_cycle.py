@@ -49,7 +49,7 @@ from . import publish as publish_component
 # In order. `--from` names one of these and the ones before it are skipped,
 # which is how a run that died in the export is finished without touching the
 # branch it already merged.
-STEPS = ("merge", "tag", "push", "wait", "land", "export")
+STEPS = ("changelog", "merge", "tag", "push", "wait", "land", "export")
 
 # `version = "1.2.3"`, `"version": "1.2.3"`, `__version__ = "1.2.3"`. Enough to
 # recognise the declaration in a pyproject.toml, a Cargo.toml, a package.json or
@@ -83,6 +83,10 @@ class Plan:
     # ahead of it again rather than two.
     base: str
     retag: bool
+    # The line holding "## [Unreleased]", when the notes came from there and
+    # the heading is to be renamed to this version before the squash. None when
+    # the CHANGELOG already names the version.
+    promote: int | None = None
 
 
 def _split_version(cfg: ReleaseConfig, given: str) -> tuple[str, str]:
@@ -95,38 +99,74 @@ def _split_version(cfg: ReleaseConfig, given: str) -> tuple[str, str]:
     return version, cfg.tag_for(version)
 
 
-def changelog_notes(root: Path, cfg: ReleaseConfig, version: str) -> str:
-    """The CHANGELOG section for `version`, verbatim.
+@dataclass
+class Notes:
+    """The release notes, and where they came from."""
+    text: str
+    # Set when they came from an "## [Unreleased]" heading on this line, which
+    # the release renames to the version it is cutting.
+    promote: int | None = None
+
+
+# "## [Unreleased]", however it is capitalised and bracketed. Keep a Changelog
+# calls it that, and every changelog in this fleet follows that format.
+UNRELEASED = re.compile(r"^##\s*\[?unreleased\]?\s*$", re.I)
+
+
+def _section(lines: list[str], heading: re.Pattern[str]) -> tuple[int, str] | None:
+    """The first section whose heading matches, as (line index, body)."""
+    for i, line in enumerate(lines):
+        if not heading.match(line):
+            continue
+        body = []
+        for later in lines[i + 1:]:
+            if later.startswith("## "):
+                break
+            body.append(later)
+        return i, "\n".join(body).strip("\n")
+    return None
+
+
+def read_notes(root: Path, cfg: ReleaseConfig, version: str) -> Notes:
+    """The CHANGELOG section for `version`, verbatim — or the Unreleased one.
 
     Read here rather than left to CI because this is the last moment it can be
     fixed cheaply. A missing entry discovered by the build has already cost a
     tag, a push and however long the build ran.
+
+    Writing the version into the heading is the release's job, not the author's:
+    while the work is on the work branch nobody knows which version it will go
+    out as, so it accumulates under "## [Unreleased]" and the cut renames that
+    heading to the number it is cutting. Refusing a release over a heading the
+    release itself is about to write would be a chore invented by the tool.
     """
     if cfg.changelog is None:
-        return ""
+        return Notes("")
     path = root / cfg.changelog
     if not path.is_file():
         raise ButlerError(f"no {cfg.changelog} in this project",
                           hint="Write one, or set [release] changelog = \"\" to\n"
                                "stop butler looking for release notes.")
+    lines = path.read_text().splitlines()
     # "## [1.2.3]" or "## 1.2.3 — title", up to the next heading of that level.
-    heading = re.compile(rf"^##\s*\[?{re.escape(version)}\]?(\D|$)")
-    out, capturing = [], False
-    for line in path.read_text().splitlines():
-        if heading.match(line):
-            capturing = True
-            continue
-        if capturing and line.startswith("## "):
-            break
-        if capturing:
-            out.append(line)
-    notes = "\n".join(out).strip("\n")
-    if not notes.strip():
-        raise ButlerError(
-            f"{cfg.changelog} has no entry for {version}",
-            hint=f"Add a '## [{version}]' section. It becomes the release notes,\n"
-                 "and a release without them is one nobody can read.")
-    return notes + "\n"
+    named = _section(lines, re.compile(rf"^##\s*\[?{re.escape(version)}\]?(\D|$)"))
+    if named and named[1].strip():
+        return Notes(named[1] + "\n")
+
+    # Only when the version has no section at all. One that is there but empty
+    # is a section somebody started and left; promoting Unreleased on top of it
+    # would put the same heading in the file twice.
+    if named is None:
+        unreleased = _section(lines, UNRELEASED)
+        if unreleased and unreleased[1].strip():
+            return Notes(unreleased[1] + "\n", promote=unreleased[0])
+
+    raise ButlerError(
+        f"{cfg.changelog} has no entry for {version}",
+        hint=f"Add a '## [{version}]' section, or write the notes under\n"
+             "'## [Unreleased]' and the cut will rename that heading.\n"
+             "They become the release notes, and a release without them is\n"
+             "one nobody can read.")
 
 
 def check_version_files(root: Path, cfg: ReleaseConfig, version: str) -> None:
@@ -195,7 +235,13 @@ def preflight(ctx: Ctx, cfg: ReleaseConfig, args, version: str, tag: str) -> Pla
             f"this checkout is on '{cfg.into}', the branch the release writes",
             hint=f"A release is cut from the work branch:\n  git checkout {cfg.source}")
 
-    notes = changelog_notes(root, cfg, version)
+    notes = read_notes(root, cfg, version)
+    if notes.promote is not None and on != cfg.source:
+        raise ButlerError(
+            f"the notes are under '## [Unreleased]', and this checkout is on "
+            f"'{on}'",
+            hint=f"Renaming that heading is a commit on the work branch:\n"
+                 f"  git checkout {cfg.source}")
     check_version_files(root, cfg, version)
     subject = cfg.subject(ctx.name, version)
 
@@ -302,8 +348,8 @@ def preflight(ctx: Ctx, cfg: ReleaseConfig, args, version: str, tag: str) -> Pla
                      f"first:\n  git checkout {cfg.into} && "
                      f"git reset --hard origin/{cfg.into}")
 
-    return Plan(version=version, tag=tag, subject=subject, notes=notes,
-                base=base, retag=retag)
+    return Plan(version=version, tag=tag, subject=subject, notes=notes.text,
+                base=base, retag=retag, promote=notes.promote)
 
 
 def _is_attempt(ctx: Ctx, commit: str, base: str, subject: str) -> bool:
@@ -343,6 +389,40 @@ def _mirror_has_tag(ctx: Ctx, pub, tag: str) -> bool:
 # --------------------------------------------------------------------------- #
 # the steps
 # --------------------------------------------------------------------------- #
+
+def changelog(ctx: Ctx, cfg: ReleaseConfig, plan: Plan) -> None:
+    """Rename "## [Unreleased]" to this version, on the work branch.
+
+    Before the squash, and committed rather than left in the working tree: the
+    release commit is a copy of the work branch's *tree*, so an uncommitted
+    edit here would be a changelog that says "Unreleased" in the release it
+    describes — and the build reads the same file to write the release notes.
+
+    Pushed too, because the build and the export both read Forgejo. Nothing
+    else in the cycle writes to the work branch; this does, which is why it
+    happens after every refusal in the preflight and not before.
+    """
+    if plan.promote is None or cfg.changelog is None:
+        return
+    ui.plain(ui.bold(f"the notes: '## [Unreleased]' -> '## [{plan.version}]'"))
+    if ctx.would(f"rename the heading in {cfg.changelog}, commit it on "
+                 f"{cfg.source} and push"):
+        return
+    path = ctx.root / cfg.changelog
+    lines = path.read_text().splitlines(keepends=True)
+    heading = lines[plan.promote]
+    if not UNRELEASED.match(heading.rstrip("\n")):
+        # The file changed under us between the preflight and here.
+        raise ButlerError(f"{cfg.changelog} line {plan.promote + 1} is no longer "
+                          f"the Unreleased heading")
+    lines[plan.promote] = f"## [{plan.version}]\n"
+    path.write_text("".join(lines))
+    ctx.check(["git", "commit", "--quiet", "-m", f"changelog: {plan.version}",
+               "--", cfg.changelog], what="commit the renamed heading")
+    ctx.check(["git", "push", "--quiet", "origin", cfg.source],
+              what=f"push {cfg.source}")
+    ui.ok(f"{cfg.changelog}", f"the notes are {plan.version}'s now")
+
 
 def merge(ctx: Ctx, cfg: ReleaseConfig, plan: Plan) -> str:
     """Give the publication branch the work branch's tree, as one commit.
@@ -510,6 +590,9 @@ def publish_hint(plan: Plan) -> str:
 def describe(ctx: Ctx, cfg: ReleaseConfig, plan: Plan, args) -> None:
     pub = ctx.cfg.publish
     ui.plain(ui.bold(f"release {plan.version}"))
+    if plan.promote is not None:
+        ui.plain(f"  notes    '## [Unreleased]' -> '## [{plan.version}]', "
+                 f"committed on {cfg.source}")
     ui.plain(f"  squash   {cfg.source} -> {cfg.into}"
              + (f"  (rewinding to {plan.base[:12]})" if plan.retag else ""))
     ui.plain(f"  commit   {plan.subject}")
@@ -548,6 +631,8 @@ def cut(ctx: Ctx, args) -> int:
 
     # None of these check anything out: the branch is written with plumbing,
     # so the working tree this was run from is the working tree it ends in.
+    if "changelog" in steps:
+        changelog(ctx, cfg, plan)
     target = merge(ctx, cfg, plan) if "merge" in steps else _sha(ctx, cfg.into)
     if not target:
         raise ButlerError(f"there is no local '{cfg.into}' to tag",

@@ -124,7 +124,7 @@ CHANGELOG = """# Changelog
 
 def test_the_notes_are_the_changelog_section_for_that_version(tmp_path):
     (tmp_path / "CHANGELOG.md").write_text(CHANGELOG)
-    notes = release_cycle.changelog_notes(tmp_path, parse().release, "1.2.3")
+    notes = release_cycle.read_notes(tmp_path, parse().release, "1.2.3").text
     assert "the thing" in notes
     # Strictly this version's section: the next heading ends it.
     assert "earlier thing" not in notes
@@ -132,7 +132,7 @@ def test_the_notes_are_the_changelog_section_for_that_version(tmp_path):
 
 def test_a_heading_without_brackets_is_read_too(tmp_path):
     (tmp_path / "CHANGELOG.md").write_text("## 2026.9.3 — the one with the fix\n\n- it\n")
-    assert "- it" in release_cycle.changelog_notes(tmp_path, parse().release, "2026.9.3")
+    assert "- it" in release_cycle.read_notes(tmp_path, parse().release, "2026.9.3").text
 
 
 def test_a_version_with_no_entry_is_refused(tmp_path):
@@ -140,18 +140,77 @@ def test_a_version_with_no_entry_is_refused(tmp_path):
     # and CI reads the same file to write the release notes.
     (tmp_path / "CHANGELOG.md").write_text(CHANGELOG)
     with pytest.raises(ButlerError, match="no entry for 9.9.9"):
-        release_cycle.changelog_notes(tmp_path, parse().release, "9.9.9")
+        release_cycle.read_notes(tmp_path, parse().release, "9.9.9")
 
 
 def test_an_empty_section_counts_as_missing(tmp_path):
     (tmp_path / "CHANGELOG.md").write_text("## [1.2.3]\n\n## [1.2.2]\n\n- old\n")
     with pytest.raises(ButlerError, match="no entry"):
-        release_cycle.changelog_notes(tmp_path, parse().release, "1.2.3")
+        release_cycle.read_notes(tmp_path, parse().release, "1.2.3").text
+
+
+UNRELEASED_CHANGELOG = """# Changelog
+
+## [Unreleased]
+
+### Added
+
+- the new thing
+
+## [1.2.2]
+
+- the earlier thing
+"""
+
+
+def test_notes_under_unreleased_are_taken_and_marked_for_renaming(tmp_path):
+    # Nobody knows the version number while the work is on the work branch, so
+    # the notes accumulate under Unreleased and the cut names them.
+    (tmp_path / "CHANGELOG.md").write_text(UNRELEASED_CHANGELOG)
+    notes = release_cycle.read_notes(tmp_path, parse().release, "1.2.3")
+    assert "the new thing" in notes.text
+    assert "earlier thing" not in notes.text
+    assert notes.promote == UNRELEASED_CHANGELOG.splitlines().index("## [Unreleased]")
+
+
+@pytest.mark.parametrize("heading", ["## [Unreleased]", "## Unreleased",
+                                     "## [unreleased]", "##  [UNRELEASED] "])
+def test_every_spelling_of_the_unreleased_heading_counts(tmp_path, heading):
+    (tmp_path / "CHANGELOG.md").write_text(f"{heading}\n\n- a thing\n")
+    assert release_cycle.read_notes(tmp_path, parse().release, "1.2.3").promote == 0
+
+
+def test_a_version_that_has_its_own_section_is_not_promoted(tmp_path):
+    (tmp_path / "CHANGELOG.md").write_text(
+        "## [Unreleased]\n\n- later\n\n## [1.2.3]\n\n- the thing\n")
+    notes = release_cycle.read_notes(tmp_path, parse().release, "1.2.3")
+    assert notes.promote is None and "the thing" in notes.text and "later" not in notes.text
+
+
+def test_an_empty_unreleased_section_is_still_a_missing_entry(tmp_path):
+    (tmp_path / "CHANGELOG.md").write_text("## [Unreleased]\n\n## [1.2.2]\n\n- old\n")
+    with pytest.raises(ButlerError, match="no entry for 1.2.3"):
+        release_cycle.read_notes(tmp_path, parse().release, "1.2.3")
+
+
+def test_a_started_but_empty_version_section_is_not_filled_from_unreleased(tmp_path):
+    # Promoting on top of it would put the same heading in the file twice.
+    (tmp_path / "CHANGELOG.md").write_text(
+        "## [1.2.3]\n\n## [Unreleased]\n\n- a thing\n")
+    with pytest.raises(ButlerError, match="no entry"):
+        release_cycle.read_notes(tmp_path, parse().release, "1.2.3")
+
+
+def test_the_refusal_says_unreleased_is_an_option(tmp_path):
+    (tmp_path / "CHANGELOG.md").write_text(CHANGELOG)
+    with pytest.raises(ButlerError, match="no entry for 9.9.9") as e:
+        release_cycle.read_notes(tmp_path, parse().release, "9.9.9")
+    assert "Unreleased" in (e.value.hint or "")
 
 
 def test_notes_can_be_turned_off(tmp_path):
     cfg = parse('changelog = ""').release
-    assert release_cycle.changelog_notes(tmp_path, cfg, "1") == ""
+    assert release_cycle.read_notes(tmp_path, cfg, "1").text == ""
 
 
 @pytest.mark.parametrize("text", [
@@ -249,6 +308,59 @@ def test_a_release_adds_exactly_one_commit_to_the_publication_branch(repo):
     assert log == ["demo 1.2.3", "first"]
     assert git("rev-parse", "v1.2.3^{commit}", cwd=repo) == \
         git("rev-parse", "main", cwd=repo)
+
+
+def test_an_unreleased_heading_is_renamed_and_ships_in_the_release(repo):
+    # The release commit is a copy of the work branch's TREE, so the rename has
+    # to be committed there before the squash or the released changelog still
+    # reads "Unreleased".
+    (repo / "CHANGELOG.md").write_text(UNRELEASED_CHANGELOG)
+    (repo / "pyproject.toml").write_text('version = "1.2.3"\n')
+    git("commit", "--quiet", "-am", "notes", cwd=repo)
+    git("push", "--quiet", "origin", "dev", cwd=repo)
+
+    assert release_cycle.cut(ctx_for(repo), args_for("1.2.3")) == 0
+
+    released = git("show", "v1.2.3:CHANGELOG.md", cwd=repo)
+    assert "## [1.2.3]" in released and "Unreleased" not in released
+    # And on the work branch, as its own commit — not left in the working tree.
+    assert "## [1.2.3]" in (repo / "CHANGELOG.md").read_text()
+    assert git("status", "--porcelain", cwd=repo) == ""
+    assert git("log", "-1", "--format=%s", "dev", cwd=repo) == "changelog: 1.2.3"
+    assert git("rev-parse", "dev", cwd=repo) == git("rev-parse", "origin/dev", cwd=repo)
+
+
+def test_the_notes_the_release_carries_are_the_unreleased_ones(repo):
+    (repo / "CHANGELOG.md").write_text(UNRELEASED_CHANGELOG)
+    git("commit", "--quiet", "-am", "notes", cwd=repo)
+    git("push", "--quiet", "origin", "dev", cwd=repo)
+    ctx = ctx_for(repo)
+    plan = release_cycle.preflight(ctx, ctx.cfg.release, args_for("1.2.3"),
+                                   "1.2.3", "v1.2.3")
+    assert "the new thing" in plan.notes
+    assert plan.promote is not None
+
+
+def test_check_does_not_touch_the_changelog(repo):
+    (repo / "CHANGELOG.md").write_text(UNRELEASED_CHANGELOG)
+    git("commit", "--quiet", "-am", "notes", cwd=repo)
+    git("push", "--quiet", "origin", "dev", cwd=repo)
+    before = git("rev-parse", "dev", cwd=repo)
+
+    assert release_cycle.cut(ctx_for(repo), args_for("1.2.3", check=True)) == 0
+
+    assert (repo / "CHANGELOG.md").read_text() == UNRELEASED_CHANGELOG
+    assert git("rev-parse", "dev", cwd=repo) == before
+
+
+def test_the_rename_is_refused_from_a_branch_that_is_not_the_work_branch(repo):
+    (repo / "CHANGELOG.md").write_text(UNRELEASED_CHANGELOG)
+    git("commit", "--quiet", "-am", "notes", cwd=repo)
+    git("push", "--quiet", "origin", "dev", cwd=repo)
+    git("checkout", "--quiet", "-b", "side", cwd=repo)
+
+    with pytest.raises(ButlerError, match="Unreleased"):
+        release_cycle.cut(ctx_for(repo), args_for("1.2.3"))
 
 
 def test_the_tag_goes_first_and_the_branch_waits_for_the_build(repo):

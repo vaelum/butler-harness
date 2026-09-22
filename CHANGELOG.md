@@ -9,6 +9,29 @@ here is what projects actually consume — keep these sections accurate before
 tagging. `butler.py --version` reports the version in use and the pin the
 project asked for.
 
+## [0.8.3]
+
+### Changed
+
+- **A release names its own notes.** `release` refused to cut a version the
+  CHANGELOG had no `## [x.y.z]` section for — but while the work sits on the
+  work branch nobody knows which version it will go out as, so the notes
+  accumulate under `## [Unreleased]` and the refusal was a chore the tool had
+  invented for itself. The cut now renames that heading to the version it is
+  cutting, and takes the section as the release notes.
+
+  The rename is a commit on the work branch, pushed, before the squash: the
+  release commit is a copy of that branch's *tree*, so an edit left in the
+  working tree would ship a changelog still reading "Unreleased" in the release
+  it describes — and the build reads the same file to write the notes. It is
+  the one step in the cycle that writes to the work branch, so it runs after
+  every refusal in the preflight, and `--check` still changes nothing.
+
+  A version that already has its own section is untouched, including when it is
+  there but empty: promoting on top of it would put the same heading in the
+  file twice. A run started from a branch that is not the work branch is
+  refused rather than committed somewhere else.
+
 ## [0.8.2]
 
 ### Fixed
