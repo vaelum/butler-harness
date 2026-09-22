@@ -139,6 +139,24 @@ def test_workflow_names_both_repos_and_pins_the_identity():
     assert 'metadata.scrubber' in sky
 
 
+def test_every_export_scrubs_co_author_trailers():
+    # authoring.overwrite pins who the commit is BY; a Co-authored-by trailer
+    # sits in the message body, out of its reach, and GitHub credits it as a
+    # second author. Baseline, not a project option.
+    import re
+    sky = publish.workflow(parse(BASE).publish, destination="x")
+    assert publish.COAUTHOR_STRIP.strip() in sky
+
+    rx = re.compile(publish.COAUTHOR_RE.replace("(?im)", ""), re.I | re.M)
+    msg = ("subject\n\nbody\n\n"
+           "Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>\n")
+    assert rx.sub("", msg) == "subject\n\nbody\n\n"
+    # Trailing newline matched too, so no blank line is left where it was.
+    assert not rx.sub("", msg).endswith("\n\n\n")
+    # A body that merely mentions one is not a trailer.
+    assert rx.sub("", "see Co-authored-by: in the docs\n") == "see Co-authored-by: in the docs\n"
+
+
 def test_workflow_carries_every_exclude():
     cfg = parse(BASE + 'exclude = ["secrets/**"]\n').publish
     sky = publish.workflow(cfg, destination="x")

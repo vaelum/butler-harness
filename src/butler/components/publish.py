@@ -89,6 +89,17 @@ MD_PATHS = ("*.md", "**/*.md")
 # RE2, which has none.
 PUBLISH_TABLE_RE = r"\n\[publish\]\n(?:[^\[\n][^\n]*\n|\n)*"
 
+# Every Co-authored-by trailer, whatever its case. The author of an exported
+# commit is already pinned by `authoring.overwrite`, but a trailer lives in the
+# message body, where that pin does not reach — and GitHub reads it back out
+# and credits a second person on the commit. A tool that writes one into the
+# private history must not be able to put a name on the public one, so this is
+# baseline rather than something a project opts into. RE2 has no lookaround;
+# matching the newline as part of the line is what keeps a blank line from
+# being left behind.
+COAUTHOR_RE = r"(?im)^co-authored-by:[^\n]*\n?"
+COAUTHOR_STRIP = f'    metadata.scrubber("{COAUTHOR_RE}", replacement = ""),'
+
 # Starlark rejects an unescaped bracket in a plain string, so the pattern is
 # emitted as a raw string.
 # Wrapped, and IGNORE_NOOP: history predating the [publish] block has nothing to
@@ -182,6 +193,7 @@ def workflow(cfg: PublishConfig, *, destination: str) -> str:
         # A commit message may carry private notes after a line starting with
         # "PRIVATE:"; that line and everything after it is dropped publicly.
         '    metadata.scrubber("(?s)\\nPRIVATE:.*", replacement = ""),',
+        COAUTHOR_STRIP,
         # The [publish] table is export machinery, like copy.bara.sky and
         # push-public.sh — and it names the private host the mirror is
         # generated from. The rest of butler.toml says how the project is
@@ -362,6 +374,28 @@ def require_tag_pushed(ctx: Ctx, cfg: PublishConfig, tag: str) -> None:
                           f"not the local {ours.out.strip()[:12]}")
 
 
+def require_empty(ctx: Ctx, cfg: PublishConfig, run) -> None:
+    """Refuse `--init` against a mirror that already has the branch.
+
+    Copybara does not fail here: it prints "Ignoring --init-history because a
+    previous imported revision was found" and exports nothing, which reads like
+    a successful no-op. Somebody re-exporting to rewrite what is already public
+    would believe it worked. Starting over means emptying the branch first, and
+    that is a decision, not something an export should do behind a flag.
+    """
+    if ctx.dry_run:
+        return
+    listing = proc.capture(["git", "ls-remote", run.destination,
+                            f"refs/heads/{cfg.branch}"], cwd=ctx.root)
+    if listing.out.strip():
+        raise ButlerError(
+            f"--init, but github.com/{cfg.github} already has '{cfg.branch}'",
+            hint="--init exports into an EMPTY mirror; Copybara would ignore it\n"
+                 "here and export nothing. To genuinely start the public history\n"
+                 "over, delete that branch on the mirror first — and remember\n"
+                 "every public tag then names a commit that is no longer there.")
+
+
 # --------------------------------------------------------------------------- #
 # actions
 # --------------------------------------------------------------------------- #
@@ -416,6 +450,10 @@ def check(ctx: Ctx, args) -> int:
     ui.plain(ui.bold("  exclude patterns"))
     for pattern in excludes(cfg):
         ui.plain(ui.dim(f"    {pattern}"))
+    ui.plain()
+    ui.plain(ui.bold("  commit messages"))
+    ui.plain(ui.dim(f"    every Co-authored-by trailer is stripped; "
+                    f"{_coauthored(ctx, cfg)} commit(s) on {cfg.branch} carry one"))
     if cfg.release:
         ui.plain()
         ui.plain(ui.bold("  releases"))
@@ -426,6 +464,18 @@ def check(ctx: Ctx, args) -> int:
     if cfg.is_public and not held:
         ui.warn("note:", "this is a public export and nothing is being held back.")
     return 0
+
+
+def _coauthored(ctx: Ctx, cfg: PublishConfig) -> int:
+    """How many commits on the branch carry a Co-authored-by trailer.
+
+    They are scrubbed on the way out, so this is not a failure — but a project
+    whose private history collects them should be able to see that it does,
+    rather than trusting the transform silently.
+    """
+    log = proc.capture(["git", "log", "--format=%H", "-i",
+                        "--grep=^Co-authored-by:", cfg.branch], cwd=ctx.root)
+    return len([line for line in log.out.splitlines() if line.strip()])
 
 
 def publish(ctx: Ctx, args) -> int:
@@ -469,6 +519,8 @@ def _export(ctx: Ctx, cfg: PublishConfig, args, run: _Run,
     # rehearsal always targets a repo created empty moments ago, so it always
     # needs this — asking for --rehearse --init would be a papercut.
     if getattr(args, "init", False) or run.rehearsing:
+        if not run.rehearsing:
+            require_empty(ctx, cfg, run)
         cmd += ["--init-history", "--force"]
 
     rc = ctx.run(cmd, cwd=ctx.root)

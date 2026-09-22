@@ -9,6 +9,36 @@ here is what projects actually consume — keep these sections accurate before
 tagging. `butler.py --version` reports the version in use and the pin the
 project asked for.
 
+## [0.8.2]
+
+### Fixed
+
+- **No exported commit carries a second author.** `authoring.overwrite` pins who
+  a public commit is *by*, but a `Co-authored-by` trailer lives in the message
+  body, where that pin does not reach — and GitHub reads it back out and credits
+  the name on the commit. Two chords commits went public that way, with an LLM
+  listed beside the author line that was doing its job.
+
+  Every generated `copy.bara.sky` now scrubs the trailer, whatever its case.
+  Baseline rather than a project option: a tool that writes one into a private
+  history must not be able to put a name on the public one. RE2 has no
+  lookaround, so the newline is matched as part of the line — that is what keeps
+  a blank line from being left where the trailer was.
+
+- **`--init` refuses a mirror that already has the branch.** Copybara does not
+  fail there; it prints `Ignoring --init-history because a previous imported
+  revision was found` and exports nothing, which reads exactly like a successful
+  no-op. Anyone re-exporting in order to rewrite what is already public would
+  believe it had worked. It is now an error naming what starting the public
+  history over actually costs: every published tag then points at a commit that
+  is no longer there.
+
+### Added
+
+- `publish check` says how many commits on the publication branch carry a
+  `Co-authored-by` trailer, so a history collecting them is visible rather than
+  silently depending on the transform to catch every one.
+
 ## [0.8.1]
 
 ### Added

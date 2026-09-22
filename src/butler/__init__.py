@@ -13,7 +13,7 @@ from .context import Ctx
 from .errors import ButlerError, ConfigError, MissingToolError
 from .tasks import task
 
-__version__ = "0.8.1"
+__version__ = "0.8.2"
 
 __all__ = [
     "task", "arg", "Arg", "Ctx",
