@@ -654,8 +654,8 @@ timeout       = 3600                # seconds to wait for the build
 | `release 1.2.3` | the whole cycle |
 | `release 1.2.3 --check` | print the plan and stop; changes nothing, anywhere |
 | `release 1.2.3 --retag` | re-cut a version whose build failed — see below |
-| `release 1.2.3 --from export` | resume from a step (`merge`, `tag`, `push`, `wait`, `export`) |
-| `release 1.2.3 --no-wait` | push and stop; run `publish --tag` yourself once the build is green |
+| `release 1.2.3 --from land` | resume from a step (`merge`, `tag`, `push`, `wait`, `land`, `export`) |
+| `release 1.2.3 --no-wait` | push the tag and stop; finish with `--from land` once the build is green |
 | `release 1.2.3 --no-export` | stop after the build; leave the mirror alone |
 
 ### The release commit is a tree copy, not a merge
@@ -694,6 +694,29 @@ on the machine and nothing on either forge:
 
 Then the plan is printed and confirmed (`--yes` for an unattended run).
 
+### The tag goes first; the branch waits for the build
+
+The steps are `merge`, `tag`, `push`, `wait`, `land`, `export`, and the order of
+the last three is the point. `push` sends **only the tag** — that is what starts
+the build. The publication branch does not move until the build has passed, and
+`land` is that push.
+
+It buys two things. A failed build has pushed nothing but a tag, so re-cutting
+the version rewinds nothing that was ever published, and the fixed release
+commit lands as an ordinary fast-forward. Which means the publication branch can
+stay **force-push protected** on the forge, as a branch that is written by
+releases only should be.
+
+butler 0.8.1 found this the expensive way. The first ordering pushed the branch
+and the tag together; that build failed, and the re-cut bounced off
+`Forgejo: branch main is protected from force push` — correctly, and with the
+failed release already sitting on the public branch.
+
+A run that was told `--no-wait` stops after the tag and says so; when the build
+goes green, `release 1.2.3 --from land` finishes it. That is also the recovery
+for a run interrupted anywhere after the tag: the preflight expects to find its
+own tag and its own unfinished release commit, and picks up where it stopped.
+
 ### A failed build can be re-cut
 
 A build that failed published nothing, so the version number is still free:
@@ -705,11 +728,13 @@ git push origin dev
 butler.py release 1.2.3 --retag
 ```
 
-The squash commit is rebuilt from the fixed work branch, the tag moves onto it,
-and both are force-pushed — the branch is force-pushed *with lease*, so a commit
-someone else put on it since the fetch aborts the push rather than disappearing.
-The publication branch still gains exactly one commit for the release, which is
-what keeps a generated public history readable.
+The release commit is rebuilt from the fixed work branch and the tag moves onto
+it — a plain force on the tag, which is safe because nothing has been published
+under it. The publication branch needs no force at all in the normal case,
+because it never moved for the failed attempt; it still gains exactly one commit
+for the release, which is what keeps a generated public history readable. (A run
+that had been told `--no-wait` may have landed the branch already; that one case
+rewinds it with `--force-with-lease`, and needs force-push to be allowed.)
 
 It stops being safe the moment anything has been published under that tag, and
 `--retag` refuses there: a tag whose Forgejo release exists, or whose commit is

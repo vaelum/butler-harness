@@ -49,7 +49,7 @@ from . import publish as publish_component
 # In order. `--from` names one of these and the ones before it are skipped,
 # which is how a run that died in the export is finished without touching the
 # branch it already merged.
-STEPS = ("merge", "tag", "push", "wait", "export")
+STEPS = ("merge", "tag", "push", "wait", "land", "export")
 
 # `version = "1.2.3"`, `"version": "1.2.3"`, `__version__ = "1.2.3"`. Enough to
 # recognise the declaration in a pyproject.toml, a Cargo.toml, a package.json or
@@ -199,7 +199,12 @@ def preflight(ctx: Ctx, cfg: ReleaseConfig, args, version: str, tag: str) -> Pla
     check_version_files(root, cfg, version)
     subject = cfg.subject(ctx.name, version)
 
-    ctx.check(["git", "fetch", "--quiet", "--tags", "origin"], echo=False,
+    # Branches only. `--tags` would try to update every local tag from origin
+    # and fail the whole run on "would clobber existing tag" — which is exactly
+    # the state a re-cut is in, its tag moved locally and not yet pushed. What
+    # origin has under a tag is read with ls-remote, where it cannot be
+    # confused with what this checkout has.
+    ctx.check(["git", "fetch", "--quiet", "--no-tags", "origin"], echo=False,
               what="fetch origin")
     source = _sha(ctx, cfg.source)
     if source is None:
@@ -218,56 +223,94 @@ def preflight(ctx: Ctx, cfg: ReleaseConfig, args, version: str, tag: str) -> Pla
             hint=f"The build and the export both read Forgejo. Push first:\n"
                  f"  git push origin {cfg.source}")
 
-    into = _sha(ctx, f"origin/{cfg.into}") or _sha(ctx, cfg.into)
-    if into is None:
+    origin_into = _sha(ctx, f"origin/{cfg.into}") or _sha(ctx, cfg.into)
+    if origin_into is None:
         raise ButlerError(f"there is no '{cfg.into}' branch, locally or on origin",
                           hint="Create it before the first release:\n"
                                f"  git branch {cfg.into} {cfg.source}")
 
-    # The merge step puts `into` exactly where origin has it, which throws
-    # away anything local sitting on top. That is right for a branch nobody
-    # commits to directly — and this is the check that it is that branch.
-    local_into = _sha(ctx, cfg.into)
-    if local_into is not None and local_into != into and not args.retag:
-        raise ButlerError(
-            f"local '{cfg.into}' is not what origin has",
-            hint=f"  local  {local_into[:12]}\n  origin {into[:12]}\n"
-                 f"'{cfg.into}' is written by releases only. Reconcile it first:\n"
-                 f"  git checkout {cfg.into} && git reset --hard origin/{cfg.into}")
+    # A release is going to be published on that forge, so ask now whether it
+    # can be. The alternative is finding out from the build, after the tag.
+    pub = ctx.cfg.publish
+    if pub is not None and pub.release and not ctx.dry_run:
+        if not forgejo.releases_enabled(pub.host, pub.forgejo):
+            raise ButlerError(
+                f"{pub.host}/{pub.forgejo} has Releases turned off",
+                hint="Its CI publishes a release for the tag, and every releases\n"
+                     "endpoint on that repository answers 404 while the unit is\n"
+                     "disabled. Turn it on in the repository settings, or set\n"
+                     "[publish] release = false if this project has no release\n"
+                     "to copy.")
 
     local_tag, remote = _sha(ctx, tag), _remote_tag(ctx, tag)
     existing = local_tag or remote
-    if existing and not args.retag:
+    # A run resuming after the tag step is *expected* to find its tag: that is
+    # what finishing a release whose build has since gone green looks like.
+    # Only a run that would create one is refused for finding it there.
+    resuming = args.from_step in ("push", "wait", "land", "export")
+    if existing and not args.retag and not resuming:
         raise ButlerError(
             f"{tag} already exists",
             hint="If its build failed, nothing has been published yet and the\n"
-                 f"same version can be re-cut:\n  {ctx.cfg.project.name} release "
+                 f"same version can be re-cut:\n  butler.py release "
                  f"{version} --retag\nOtherwise cut the next version.")
     if args.retag and not existing:
         ui.warn("note:", f"--retag was given but {tag} does not exist yet; "
                          "cutting it normally.")
-
     retag = bool(existing) and args.retag
-    base = into
+
+    # Where the release commit goes on top of. The publication branch is
+    # written by releases only, so anything else sitting on it is a mistake
+    # worth stopping for — with one exception that is not a mistake at all: an
+    # earlier attempt at THIS release, which every run of this component makes
+    # locally before it is pushed.
+    base = origin_into
     if retag:
         _refuse_a_published_retag(ctx, cfg, tag)
-        # The release commit is the one the tag names, and the branch must be
-        # sitting on it: rewinding past anything else would throw away work
-        # this component never put there.
-        release_commit = existing
-        if into != release_commit:
-            raise ButlerError(
-                f"'{cfg.into}' is not on {tag}, so re-cutting it would rewrite "
-                f"commits butler did not make",
-                hint=f"{cfg.into} is at {into[:12]}, {tag} names {release_commit[:12]}.\n"
-                     "Sort that out by hand.")
+        # What ORIGIN has under the tag, preferentially: that is the release
+        # whose build failed, the one the branch may be carrying. The local tag
+        # may already have been moved by an earlier, half-finished re-cut, and
+        # reading that one would measure this run against itself.
+        release_commit = remote or local_tag
         parent = _sha(ctx, f"{release_commit}^")
         if parent is None:
             raise ButlerError(f"the commit {tag} names has no parent to rewind to")
-        base = parent
+        # Two shapes are both fine, because the branch may or may not have
+        # landed before the build failed: it is either still under the release
+        # (the normal case now that the tag is pushed first) or on it (a run
+        # told not to wait, or one from before that order changed).
+        if origin_into == release_commit:
+            base = parent
+        elif origin_into == parent:
+            base = origin_into
+        else:
+            raise ButlerError(
+                f"'{cfg.into}' is not where {tag} was cut from, so re-cutting "
+                f"it would rewrite commits butler did not make",
+                hint=f"origin/{cfg.into} is at {origin_into[:12]}; {tag} names "
+                     f"{release_commit[:12]} on {parent[:12]}.\nSort that out by hand.")
+
+    local_into = _sha(ctx, cfg.into)
+    if local_into is not None and local_into not in (base, origin_into):
+        # An earlier attempt's release commit for this version is expected:
+        # `merge` rebuilds it in place. Anything else is someone's own work.
+        if not _is_attempt(ctx, local_into, base, subject):
+            raise ButlerError(
+                f"local '{cfg.into}' is not what origin has",
+                hint=f"  local  {local_into[:12]}\n  origin {origin_into[:12]}\n"
+                     f"'{cfg.into}' is written by releases only. Reconcile it "
+                     f"first:\n  git checkout {cfg.into} && "
+                     f"git reset --hard origin/{cfg.into}")
 
     return Plan(version=version, tag=tag, subject=subject, notes=notes,
                 base=base, retag=retag)
+
+
+def _is_attempt(ctx: Ctx, commit: str, base: str, subject: str) -> bool:
+    """Whether `commit` is this release's commit from an earlier, unfinished
+    run of this command — one commit, on `base`, with the release subject."""
+    got = ctx.capture(["git", "show", "-s", "--format=%P%n%s", commit]).out.splitlines()
+    return len(got) >= 2 and got[0].split() == [base] and got[1].strip() == subject
 
 
 def _refuse_a_published_retag(ctx: Ctx, cfg: ReleaseConfig, tag: str) -> None:
@@ -374,38 +417,76 @@ def tag(ctx: Ctx, cfg: ReleaseConfig, plan: Plan, target: str) -> None:
 
 
 def push(ctx: Ctx, cfg: ReleaseConfig, plan: Plan) -> None:
-    """Send branch and tag to Forgejo, which is what starts the build."""
-    branch = ["git", "push", "origin", f"refs/heads/{cfg.into}"]
-    tag_ref = ["git", "push", "origin", f"refs/tags/{plan.tag}"]
+    """Send the TAG to Forgejo. That is what starts the build.
+
+    Only the tag. The publication branch stays where it is until the build has
+    passed (`land`, below), and the order matters more than it looks:
+
+      * a failed build leaves that branch untouched, so re-cutting the version
+        rewinds nothing that was ever pushed — the fixed release commit lands as
+        an ordinary fast-forward, and `--retag` never has to force a branch;
+      * which means the branch can stay force-push protected on the forge, as a
+        publication branch should be. butler 0.8.1 found this the hard way: the
+        old order pushed the branch first, its build failed, and the re-cut
+        bounced off "branch main is protected from force push" — correctly.
+
+    A tag has nothing to protect: nothing is published under it until its build
+    says so, and moving it is the whole point of a re-cut.
+    """
+    cmd = ["git", "push", "origin", f"refs/tags/{plan.tag}"]
     if plan.retag:
-        # Two pushes, two kinds of force. The branch is force-pushed *with
-        # lease*, so a commit someone else put on it since the fetch above
-        # aborts the push rather than disappearing. A tag has no remote-tracking
-        # ref for a lease to compare against, so moving it is a plain force —
-        # which is safe here only because nothing has been published under it,
-        # and that was checked before anything moved.
-        branch.insert(2, "--force-with-lease")
-        tag_ref.insert(2, "--force")
-    ctx.check(branch, what=f"push {cfg.into}")
-    ctx.check(tag_ref, what=f"push {plan.tag}")
-    ui.ok(f"pushed {cfg.into} and {plan.tag}", "-> origin")
+        # A tag has no remote-tracking ref for a lease to compare against, so
+        # moving it is a plain force — safe here only because nothing has been
+        # published under it, which was checked before anything moved.
+        cmd.insert(2, "--force")
+    ctx.check(cmd, what=f"push {plan.tag}")
+    ui.ok(f"pushed {plan.tag}", "-> origin, which starts the build")
 
 
-def wait(ctx: Ctx, cfg: ReleaseConfig, plan: Plan, args) -> None:
-    """Wait for the build the tag started, and refuse to go on unless it passed."""
+def land(ctx: Ctx, cfg: ReleaseConfig, plan: Plan) -> None:
+    """Move the publication branch onto the release, once its build has passed.
+
+    A fast-forward, always: the branch was left alone until now, so the release
+    commit sits directly on top of what origin has. If this is ever rejected as
+    non-fast-forward, something else moved the branch — which is a thing to look
+    at, not to force past.
+    """
+    cmd = ["git", "push", "origin", f"refs/heads/{cfg.into}"]
+    if plan.retag and (_sha(ctx, f"origin/{cfg.into}") or plan.base) != plan.base:
+        # The branch already carries the release being re-cut — a run that was
+        # told not to wait, or one from before the tag went first. Rewinding it
+        # is what --retag is for, and with lease, so a commit someone else put
+        # there aborts the push rather than disappearing.
+        cmd.insert(2, "--force-with-lease")
+        ui.warn("note:", f"{cfg.into} already carries the re-cut release; "
+                         "rewinding it (this needs force-push to be allowed).")
+    ctx.check(cmd, what=f"push {cfg.into}")
+    ui.ok(f"pushed {cfg.into}", f"-> origin ({plan.tag} is built and released)")
+
+
+def wait(ctx: Ctx, cfg: ReleaseConfig, plan: Plan, args) -> bool:
+    """Wait for the build the tag started, and refuse to go on unless it passed.
+
+    Returns whether the build is *known* to have passed. Everything after this
+    point publishes, and publishing a release nobody has seen build is the one
+    thing this component exists to prevent — so "not waited for" and "passed"
+    must not look the same to the caller.
+    """
     if not cfg.wait or args.no_wait:
-        ui.warn("note:", "not waiting for the build "
-                         f"(run `{publish_hint(plan)}` once it is green).")
-        return
+        ui.warn("note:", "not waiting for the build.")
+        return False
     pub = ctx.cfg.publish
     if pub is None:
+        # Nothing to wait for and nothing to export: the release is whatever
+        # this repository's own forge makes of the tag.
         ui.warn("note:", "no [publish] section, so there is no Forgejo host to "
                          "watch the build on.")
-        return
+        return True
     sha = _sha(ctx, plan.tag) or ""
     forgejo.wait_for_build(ctx, host=pub.host, repo=pub.forgejo, tag=plan.tag,
                            sha=sha, timeout=args.timeout or cfg.timeout,
                            poll=cfg.poll, workflow=cfg.workflow)
+    return True
 
 
 def export(ctx: Ctx, cfg: ReleaseConfig, plan: Plan, args) -> int:
@@ -433,10 +514,11 @@ def describe(ctx: Ctx, cfg: ReleaseConfig, plan: Plan, args) -> None:
              + (f"  (rewinding to {plan.base[:12]})" if plan.retag else ""))
     ui.plain(f"  commit   {plan.subject}")
     ui.plain(f"  tag      {plan.tag}" + ("  (moved)" if plan.retag else ""))
-    ui.plain(f"  push     origin {cfg.into} {plan.tag}"
-             + ("  (forced)" if plan.retag else ""))
+    ui.plain(f"  push     origin {plan.tag}" + ("  (forced)" if plan.retag else "")
+             + "  — the build runs on it")
     if cfg.wait and not args.no_wait and pub is not None:
         ui.plain(f"  wait     the build on {pub.host}/{pub.forgejo}")
+    ui.plain(f"  land     origin {cfg.into} -> the release, once the build passed")
     if pub is not None and not args.no_export:
         what = "export, public tag" + (", release copy" if pub.release else "")
         ui.plain(f"  publish  {what} -> github.com/{pub.github}")
@@ -475,8 +557,19 @@ def cut(ctx: Ctx, args) -> int:
     if "push" in steps:
         push(ctx, cfg, plan)
 
-    if "wait" in steps:
-        wait(ctx, cfg, plan, args)
+    green = wait(ctx, cfg, plan, args) if "wait" in steps else True
+    if not green:
+        # The tag is out and the build is running; the branch and the mirror
+        # wait for it. Stopping here is what keeps a re-cut cheap: nothing that
+        # would have to be rewound has been pushed.
+        ui.plain()
+        ui.ok(f"{plan.tag} is pushed and building.",
+              f"Once it is green:  butler.py release {plan.version} --from land")
+        return 0
+    # Only now: the export reads the branch from Forgejo, so it has to be there
+    # before `publish` runs.
+    if "land" in steps:
+        land(ctx, cfg, plan)
     exported = False
     if "export" in steps and not args.no_export:
         rc = export(ctx, cfg, plan, args)

@@ -24,7 +24,8 @@ dependencies = []
 # Imported lazily, only by the projects that ask for image work (Android
 # launcher-icon safe-zone padding).
 images = ["pillow>=10"]
-dev = ["pytest>=8"]
+# `build` so `butler.py build` makes the same wheel the release job does.
+dev = ["pytest>=8", "build>=1"]
 
 [project.scripts]
 butler = "butler.__main__:main"

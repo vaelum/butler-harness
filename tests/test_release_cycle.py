@@ -212,6 +212,12 @@ def repo(tmp_path):
     return work
 
 
+@pytest.fixture(autouse=True)
+def releases_on(monkeypatch):
+    """The forge's Releases unit is on, without asking the forge."""
+    monkeypatch.setattr(release, "releases_enabled", lambda host, repo: True)
+
+
 def ctx_for(repo, extra="", **kw):
     cfg = config.parse(tomllib.loads(TOML % {"extra": extra}), repo)
     return Ctx(cfg=cfg, assume_yes=True, **kw)
@@ -245,13 +251,23 @@ def test_a_release_adds_exactly_one_commit_to_the_publication_branch(repo):
         git("rev-parse", "main", cwd=repo)
 
 
-def test_the_branch_and_tag_reach_origin(repo):
+def test_the_tag_goes_first_and_the_branch_waits_for_the_build(repo):
+    # The tag is what starts the build; the publication branch does not move
+    # until that build has passed. A failed build then leaves nothing pushed
+    # that a re-cut would have to rewind — which is also what lets the branch
+    # stay force-push protected on the forge.
     work(repo)
-    release_cycle.cut(ctx_for(repo), args_for("1.2.3"))
     origin = repo.parent / "origin.git"
-    assert git("rev-parse", "main", cwd=origin) == git("rev-parse", "main", cwd=repo)
+    before = git("rev-parse", "main", cwd=origin)
+
+    release_cycle.cut(ctx_for(repo), args_for("1.2.3"))   # --no-wait: not green
     assert git("rev-parse", "v1.2.3^{commit}", cwd=origin) == \
         git("rev-parse", "main", cwd=repo)
+    assert git("rev-parse", "main", cwd=origin) == before
+
+    # `--from land` is the recovery: the build went green, finish the release.
+    release_cycle.cut(ctx_for(repo), args_for("1.2.3", from_step="land"))
+    assert git("rev-parse", "main", cwd=origin) == git("rev-parse", "main", cwd=repo)
 
 
 def test_the_checkout_is_left_on_the_branch_it_started_on(repo):
@@ -334,15 +350,21 @@ def test_a_re_cut_still_leaves_one_commit_on_the_publication_branch(repo, unpubl
     assert (repo / "file.txt").read_text() == "the fix"
 
 
-def test_a_re_cut_moves_the_tag_on_origin_too(repo, unpublished):
+def test_a_re_cut_moves_the_tag_on_origin_and_lands_one_commit(repo, unpublished):
     work(repo, "the broken one")
     release_cycle.cut(ctx_for(repo), args_for("1.2.3"))
     work(repo, "the fix")
     release_cycle.cut(ctx_for(repo), args_for("1.2.3", retag=True))
 
     origin = repo.parent / "origin.git"
+    # The tag moved; the branch never moved for the failed attempt at all, so
+    # nothing on origin had to be rewound.
     assert git("rev-parse", "v1.2.3^{commit}", cwd=origin) == \
         git("rev-parse", "main", cwd=repo)
+    assert git("log", "--format=%s", "main", cwd=origin).splitlines() == ["first"]
+
+    # And when its build passes, the release lands as a plain fast-forward.
+    release_cycle.cut(ctx_for(repo), args_for("1.2.3", from_step="land"))
     assert git("log", "--format=%s", "main", cwd=origin).splitlines() == \
         ["demo 1.2.3", "first"]
 
@@ -569,3 +591,46 @@ def test_a_resumed_run_does_not_add_a_second_commit(repo):
     assert first == again
     assert git("log", "--format=%s", "main", cwd=repo).splitlines() == \
         ["demo 1.2.3", "first"]
+
+
+def test_a_tag_moved_locally_does_not_break_the_preflight(repo, unpublished):
+    # Mid-re-cut: the tag has moved here and not yet on origin. `git fetch
+    # --tags` calls that "would clobber existing tag" and exits 1, which used
+    # to fail the run before it could do anything about it.
+    work(repo, "the broken one")
+    release_cycle.cut(ctx_for(repo), args_for("1.2.3"))
+    release_cycle.cut(ctx_for(repo), args_for("1.2.3", from_step="land"))
+    work(repo, "the fix")
+    ctx, args = ctx_for(repo), args_for("1.2.3", retag=True)
+    plan = release_cycle.preflight(ctx, ctx.cfg.release, args, "1.2.3", "v1.2.3")
+    release_cycle.merge(ctx, ctx.cfg.release, plan)
+    release_cycle.tag(ctx, ctx.cfg.release, plan, git("rev-parse", "main", cwd=repo))
+
+    # Local tag now differs from origin's; the preflight must still run.
+    again = release_cycle.preflight(ctx, ctx.cfg.release, args, "1.2.3", "v1.2.3")
+    assert again.retag is True
+
+
+def test_releases_turned_off_on_the_forge_stops_the_release(repo, monkeypatch):
+    # The CI job publishes the release that gets copied to the mirror, and
+    # every releases endpoint answers 404 while the unit is disabled — an
+    # answer indistinguishable from a wrong URL. Asking before the tag exists
+    # turns three failed builds into one refusal.
+    monkeypatch.setattr(release, "releases_enabled", lambda host, repo: False)
+    work(repo)
+    with pytest.raises(ButlerError, match="has Releases turned off"):
+        release_cycle.cut(ctx_for(repo), args_for("1.2.3"))
+    assert not proc.capture(["git", "rev-parse", "-q", "--verify", "v1.2.3"],
+                            cwd=repo).ok
+
+
+def test_a_project_without_release_copying_does_not_ask(repo, monkeypatch):
+    def boom(host, repo):
+        raise AssertionError("release = false must not query the forge")
+
+    monkeypatch.setattr(release, "releases_enabled", boom)
+    work(repo)
+    cfg_text = TOML.replace("release = true", "release = false")
+    import tomllib as t
+    cfg = config.parse(t.loads(cfg_text % {"extra": ""}), repo)
+    assert release_cycle.cut(Ctx(cfg=cfg, assume_yes=True), args_for("1.2.3")) == 0

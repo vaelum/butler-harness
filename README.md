@@ -61,8 +61,19 @@ install, no venv, changes visible immediately:
 BUTLER_HARNESS_PATH=/path/to/butler python butler.py app dev
 ```
 
-Tests run against `src/` directly:
+The harness runs on itself. The `butler.py` in this repository is not a
+bootstrap shim — it runs `src/` directly, because a harness that pinned a
+release of itself could not ship the fix to its own release step:
 
 ```
-python -m pytest
+python3 butler.py test          # pytest against src/, no install
+python3 butler.py build         # the wheel and sdist a release attaches
+python3 butler.py publish check # what the mirror would and would not get
+python3 butler.py release 0.8.1 # squash, tag, wait for CI, export, release
 ```
+
+`release` is the whole cycle: it squashes `dev` into `main` as one commit, tags
+it, pushes to Forgejo, waits for the build that publishes the wheel and the
+sdist as a Forgejo release, then exports the tag to the mirror and copies that
+release — assets, notes and all — onto GitHub. A build that fails has published
+nothing, so the same version can be re-cut with `--retag` once it is fixed.

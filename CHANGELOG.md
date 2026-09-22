@@ -9,6 +9,67 @@ here is what projects actually consume — keep these sections accurate before
 tagging. `butler.py --version` reports the version in use and the pin the
 project asked for.
 
+## [0.8.1]
+
+### Added
+
+- **The harness runs on itself.** This repository now has the `butler.py` every
+  other project has — except that it is not a bootstrap shim. It runs `src/`
+  directly, because a harness that pinned a release of itself could not ship
+  the fix to its own release step: the code that cuts the release is the code
+  being released, which is the only arrangement in which `release --retag`
+  means anything here.
+
+  So the harness's whole life is one entry point: `butler.py test`,
+  `butler.py build`, `butler.py publish check`, `butler.py release 0.8.1`.
+  `test` and `build` are two tasks in `butler/butler_tasks.py` — pytest against
+  a src/ layout and a wheel are true of this repository, not of the projects it
+  serves, which is exactly what butler_tasks.py is for.
+
+- **A `v*` tag now publishes a Forgejo release** with the wheel and the sdist
+  attached and this version's CHANGELOG section as the notes
+  (`.forgejo/workflows/ci.yml`), and `[publish] release = true` copies it onto
+  the GitHub mirror. Until now a release of the harness was a tag and nothing
+  else — `release` waited for a build, exported the tag, and had no release to
+  copy. The job refuses to publish a wheel whose version is not the one the tag
+  names, and refuses a version with no CHANGELOG entry, so neither can reach a
+  project that pins it.
+
+### Changed
+
+- **`release` pushes the tag first and the publication branch last.** The steps
+  are now `merge`, `tag`, `push`, `wait`, `land`, `export`: `push` sends only
+  the tag, which is what starts the build, and `land` moves the branch once
+  that build has passed.
+
+  Cutting 0.8.1 is what found it. The first ordering pushed branch and tag
+  together, its build failed, and the re-cut bounced off `branch main is
+  protected from force push` — with the failed release already sitting on the
+  public branch. Now a failed build has pushed nothing but a tag: re-cutting
+  rewinds nothing that was ever published, the fixed commit lands as a plain
+  fast-forward, and the publication branch can stay force-push protected, as a
+  branch written by releases only should be.
+
+  A run told `--no-wait` stops after the tag; `release <version> --from land`
+  finishes it when the build goes green, and is the recovery for a run
+  interrupted anywhere after the tag.
+
+- **`release` asks whether the forge can publish a release at all**, before it
+  tags anything. A Forgejo repository can have its Releases unit switched off,
+  and then every releases endpoint answers `404` — indistinguishable from a
+  wrong URL, a missing release, or a token without the scope. The butler
+  repository had it off, so the new release job built its artifacts, wrote its
+  notes and died on `POST /releases` with nothing to say why; it cost three
+  builds and two wrong diagnoses (the workflow's `permissions:` block, which
+  turned out to be innocent) before anyone looked at the repository settings.
+  Now it is one refusal, before the tag, naming the checkbox.
+
+- The CI workflow declares no `permissions:` block, matching every other
+  repository here that publishes releases.
+
+- `build>=1` is in the `dev` extra, so a checkout set up the documented way can
+  build the same wheel CI does without installing anything globally.
+
 ## [0.8.0]
 
 ### Added

@@ -337,6 +337,31 @@ def published(host: str, repo: str, tag: str) -> bool:
     return True
 
 
+def releases_enabled(host: str, repo: str) -> bool:
+    """Whether the repository has its Releases unit switched on.
+
+    A Forgejo repository can have Releases disabled, and then every releases
+    endpoint answers **404** — the same answer as a wrong URL, a missing
+    release, or a token without the scope. That ambiguity cost butler 0.8.1
+    three builds: the release job built its artifacts, wrote its notes, and got
+    a bare 404 from `POST /releases` with nothing to say which of those it was.
+
+    So it is asked here, before a tag exists, where the answer is unambiguous
+    and the fix is a checkbox rather than a re-cut.
+    """
+    api = f"https://{host}/api/v1/repos/{repo}"
+    try:
+        meta = json.loads(_get(api, token(host)))
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            raise ButlerError(f"no repository {repo} on {host}") from e
+        raise ButlerError(f"could not read {repo} on {host}: HTTP {e.code}") from e
+    except OSError as e:
+        raise ButlerError(f"could not reach {host}: {e}") from e
+    # Absent on an older Forgejo, where the unit cannot be turned off at all.
+    return bool(meta.get("has_releases", True))
+
+
 def require_gh() -> None:
     if proc.which("gh") is None:
         raise ButlerError("copying a release needs the GitHub CLI (gh), and it is not installed",
