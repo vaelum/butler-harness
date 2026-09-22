@@ -221,24 +221,66 @@ def test_notes_can_be_turned_off(tmp_path):
 ])
 def test_every_usual_spelling_of_a_version_declaration_counts(tmp_path, text):
     (tmp_path / "pyproject.toml").write_text(f"[project]\n{text}\n")
-    release_cycle.check_version_files(
-        tmp_path, parse('version_files = ["pyproject.toml"]').release, "1.2.3")
+    cfg = parse('version_files = ["pyproject.toml"]').release
+    assert release_cycle.stale_version_files(tmp_path, cfg, "1.2.3") == []
 
 
-def test_a_file_left_at_the_old_version_stops_the_release(tmp_path):
+def test_a_file_left_at_the_old_version_is_written_not_refused(tmp_path):
     # The tag is the only thing that says which version this is, and it is the
-    # one thing no build reads — so a stale file ships silently.
-    (tmp_path / "pyproject.toml").write_text('version = "1.2.2"\n')
-    with pytest.raises(ButlerError, match="does not declare version 1.2.3|do\\(es\\) not"):
-        release_cycle.check_version_files(
-            tmp_path, parse('version_files = ["pyproject.toml"]').release, "1.2.3")
+    # one thing no build reads — so a stale file ships silently. The version is
+    # on the command line; making the author type it again was the chore.
+    path = tmp_path / "pyproject.toml"
+    path.write_text('[project]\nname = "demo"\nversion = "1.2.2"\n')
+    cfg = parse('version_files = ["pyproject.toml"]').release
+    assert release_cycle.stale_version_files(tmp_path, cfg, "1.2.3") == ["pyproject.toml"]
+
+    assert release_cycle.bump_version_file(path, "1.2.3") is True
+    assert path.read_text() == '[project]\nname = "demo"\nversion = "1.2.3"\n'
+    # And it is then no longer stale, nor written a second time.
+    assert release_cycle.stale_version_files(tmp_path, cfg, "1.2.3") == []
+    assert release_cycle.bump_version_file(path, "1.2.3") is False
+
+
+@pytest.mark.parametrize("text,after", [
+    ('  "version": "2026.9.4",\n', '  "version": "2026.9.5",\n'),
+    ("version = '1.2.2'\n", "version = '1.2.3'\n"),
+    ('__version__ = "0.8.3"\n', '__version__ = "1.2.3"\n'),
+])
+def test_only_the_value_is_rewritten(tmp_path, text, after):
+    # These files are not parsed, only matched: quoting, spacing and the rest of
+    # the line have to come through untouched.
+    want = "1.2.3" if "1.2.3" in after else "2026.9.5"
+    path = tmp_path / "f"
+    path.write_text("before\n" + text + "after\n")
+    release_cycle.bump_version_file(path, want)
+    assert path.read_text() == "before\n" + after + "after\n"
+
+
+def test_somebody_elses_version_is_not_the_projects(tmp_path):
+    # A Cargo.toml says `rust-version` and gives every dependency a `version`.
+    # Writing the release into one of those would be worse than refusing.
+    path = tmp_path / "Cargo.toml"
+    path.write_text('[package]\nversion = "0.1.0"\nrust-version = "1.77.2"\n\n'
+                    '[dependencies]\ntauri = { version = "2", features = [] }\n')
+    release_cycle.bump_version_file(path, "0.2.0")
+    assert path.read_text() == (
+        '[package]\nversion = "0.2.0"\nrust-version = "1.77.2"\n\n'
+        '[dependencies]\ntauri = { version = "2", features = [] }\n')
 
 
 def test_a_version_mentioned_in_prose_is_not_a_declaration(tmp_path):
     (tmp_path / "pyproject.toml").write_text("# upgrade from 1.2.3 before you start\n")
-    with pytest.raises(ButlerError):
-        release_cycle.check_version_files(
-            tmp_path, parse('version_files = ["pyproject.toml"]').release, "1.2.3")
+    cfg = parse('version_files = ["pyproject.toml"]').release
+    with pytest.raises(ButlerError, match="no version declaration"):
+        release_cycle.stale_version_files(tmp_path, cfg, "1.2.3")
+
+
+def test_a_file_butler_cannot_find_the_version_in_is_still_a_refusal(tmp_path):
+    # Guessing where the version goes is how the wrong line gets rewritten.
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = \"demo\"\n")
+    cfg = parse('version_files = ["pyproject.toml"]').release
+    with pytest.raises(ButlerError, match="no version declaration"):
+        release_cycle.stale_version_files(tmp_path, cfg, "1.2.3")
 
 
 # ---- the cycle, against real repositories ---------------------------------- #
@@ -361,6 +403,66 @@ def test_the_rename_is_refused_from_a_branch_that_is_not_the_work_branch(repo):
 
     with pytest.raises(ButlerError, match="Unreleased"):
         release_cycle.cut(ctx_for(repo), args_for("1.2.3"))
+
+
+VERSION_FILES = 'version_files = ["pyproject.toml"]'
+
+
+def test_a_stale_version_file_is_written_and_ships_in_the_release(repo):
+    (repo / "pyproject.toml").write_text('version = "1.2.2"\n')
+    (repo / "CHANGELOG.md").write_text("# Changelog\n\n## [1.2.3]\n\n- the thing\n")
+    git("commit", "--quiet", "-am", "work", cwd=repo)
+    git("push", "--quiet", "origin", "dev", cwd=repo)
+
+    assert release_cycle.cut(ctx_for(repo, VERSION_FILES), args_for("1.2.3")) == 0
+
+    assert git("show", "v1.2.3:pyproject.toml", cwd=repo) == 'version = "1.2.3"'
+    assert (repo / "pyproject.toml").read_text() == 'version = "1.2.3"\n'
+    assert git("status", "--porcelain", cwd=repo) == ""
+    assert git("log", "-1", "--format=%s", "dev", cwd=repo) == "version: 1.2.3"
+    assert git("rev-parse", "dev", cwd=repo) == git("rev-parse", "origin/dev", cwd=repo)
+
+
+def test_the_version_and_the_notes_are_one_commit(repo):
+    (repo / "pyproject.toml").write_text('version = "1.2.2"\n')
+    (repo / "CHANGELOG.md").write_text(UNRELEASED_CHANGELOG)
+    git("commit", "--quiet", "-am", "work", cwd=repo)
+    git("push", "--quiet", "origin", "dev", cwd=repo)
+
+    assert release_cycle.cut(ctx_for(repo, VERSION_FILES), args_for("1.2.3")) == 0
+
+    assert git("log", "-1", "--format=%s", "dev", cwd=repo) == "1.2.3: the version, and the notes"
+    released = git("show", "v1.2.3:CHANGELOG.md", cwd=repo)
+    assert "## [1.2.3]" in released and "Unreleased" not in released
+    assert git("show", "v1.2.3:pyproject.toml", cwd=repo) == 'version = "1.2.3"'
+    # One commit for the preparation, one for the release itself.
+    assert git("rev-list", "--count", "main", cwd=repo) == "2"
+
+
+def test_a_version_file_already_at_the_version_is_left_alone(repo):
+    (repo / "CHANGELOG.md").write_text("# Changelog\n\n## [1.2.3]\n\n- the thing\n")
+    git("commit", "--quiet", "-am", "work", cwd=repo)
+    git("push", "--quiet", "origin", "dev", cwd=repo)
+    before = git("rev-parse", "dev", cwd=repo)
+
+    assert release_cycle.cut(ctx_for(repo, VERSION_FILES), args_for("1.2.3")) == 0
+
+    # Nothing to write, so the work branch is untouched.
+    assert git("rev-parse", "dev", cwd=repo) == before
+
+
+def test_check_writes_no_version_either(repo):
+    (repo / "pyproject.toml").write_text('version = "1.2.2"\n')
+    (repo / "CHANGELOG.md").write_text(UNRELEASED_CHANGELOG)
+    git("commit", "--quiet", "-am", "work", cwd=repo)
+    git("push", "--quiet", "origin", "dev", cwd=repo)
+    before = git("rev-parse", "dev", cwd=repo)
+
+    assert release_cycle.cut(ctx_for(repo, VERSION_FILES), args_for("1.2.3", check=True)) == 0
+
+    assert (repo / "pyproject.toml").read_text() == 'version = "1.2.2"\n'
+    assert (repo / "CHANGELOG.md").read_text() == UNRELEASED_CHANGELOG
+    assert git("rev-parse", "dev", cwd=repo) == before
 
 
 def test_the_tag_goes_first_and_the_branch_waits_for_the_build(repo):

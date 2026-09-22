@@ -9,6 +9,31 @@ here is what projects actually consume — keep these sections accurate before
 tagging. `butler.py --version` reports the version in use and the pin the
 project asked for.
 
+## [0.8.4]
+
+### Changed
+
+- **A cut writes the version into the project's own files.** `release` refused a
+  version its `version_files` did not already declare, which made the author
+  type the number a second time into a file the tool was looking straight at —
+  a chore the tool had invented for itself. Those files are now written as part
+  of the same preparation commit as the notes, before the squash, so the tagged
+  tree carries the version the tag names.
+
+  Only the project's own declaration, and only its value: the first `version`
+  (or `__version__`) whose key starts a line. That is what keeps a Cargo.toml's
+  `rust-version` and its dependencies' inline `{ version = "2" }` out of it,
+  and quoting, spacing and everything else in the file come through untouched —
+  these are files butler matches, not files it parses. A file it can find no
+  declaration in is still a refusal: guessing where the version goes is how the
+  wrong line gets rewritten.
+
+- **The `changelog` step is now `prepare`**, because it writes the version files
+  too, and both edits land as one commit on the work branch — `version: 1.2.3`,
+  `changelog: 1.2.3`, or `1.2.3: the version, and the notes`, depending on what
+  there was to write. `--from prepare` is the spelling `--from changelog` had
+  for the length of one release.
+
 ## [0.8.3]
 
 ### Changed

@@ -49,13 +49,21 @@ from . import publish as publish_component
 # In order. `--from` names one of these and the ones before it are skipped,
 # which is how a run that died in the export is finished without touching the
 # branch it already merged.
-STEPS = ("changelog", "merge", "tag", "push", "wait", "land", "export")
+STEPS = ("prepare", "merge", "tag", "push", "wait", "land", "export")
 
 # `version = "1.2.3"`, `"version": "1.2.3"`, `__version__ = "1.2.3"`. Enough to
 # recognise the declaration in a pyproject.toml, a Cargo.toml, a package.json or
 # a module — and specific enough that a version mentioned in prose nearby does
 # not count as one.
-VERSION_DECL = r'version["\'_]*\s*[:=]\s*["\']?{v}["\']?'
+#
+# The key must start its line, which is what keeps `rust-version = "1.77"` and
+# a dependency's inline `{ version = "2" }` out: those are versions of something
+# else, and this is the pattern the release WRITES through. The value is
+# captured, so the declaration can be read as well as matched.
+VERSION_DECL = re.compile(
+    r"""^(?P<head>[ \t]*(?:__version__|["']?version["']?)[ \t]*[:=][ \t]*["']?)"""
+    r"""(?P<version>[^"'\s,}\]]+)""",
+    re.M)
 
 
 def _cfg(ctx: Ctx) -> ReleaseConfig:
@@ -87,6 +95,9 @@ class Plan:
     # the heading is to be renamed to this version before the squash. None when
     # the CHANGELOG already names the version.
     promote: int | None = None
+    # The version_files still declaring some other version, which the cut
+    # writes this one into. Empty when they already agree with the tag.
+    bump: tuple[str, ...] = ()
 
 
 def _split_version(cfg: ReleaseConfig, given: str) -> tuple[str, str]:
@@ -169,24 +180,60 @@ def read_notes(root: Path, cfg: ReleaseConfig, version: str) -> Notes:
              "one nobody can read.")
 
 
-def check_version_files(root: Path, cfg: ReleaseConfig, version: str) -> None:
-    """Refuse a tag the project's own version strings disagree with.
+def declared_version(text: str) -> re.Match[str] | None:
+    """The project's own version declaration: the first one in the file.
+
+    First, because that is the project's — a Cargo.toml's `[package] version`
+    comes before its dependencies', a package.json's before everything it
+    depends on. Anything further down belongs to something else.
+    """
+    return VERSION_DECL.search(text)
+
+
+def stale_version_files(root: Path, cfg: ReleaseConfig, version: str) -> list[str]:
+    """The version_files that do not declare `version` yet, for the cut to write.
 
     chords shipped `v2026.9.2` and then had to ship it again because the app's
-    version had stayed behind; the tag is the only thing that says which is
-    right, and it is the one thing not read by any build.
+    version had stayed behind; the tag is the only thing that says which
+    version a build is, and it is the one thing no build reads. Refusing over
+    it made the author do by hand what the version number on the command line
+    already said, so the release writes it instead — and a file it cannot find
+    a declaration in is still a refusal, because guessing where the version
+    goes in a file butler does not understand is how the wrong line gets
+    rewritten.
     """
     stale = []
     for name in cfg.version_files:
         path = root / name
         if not path.is_file():
             raise ButlerError(f"[release] version_files names {name}, which does not exist")
-        if not re.search(VERSION_DECL.format(v=re.escape(version)), path.read_text()):
+        found = declared_version(path.read_text())
+        if found is None:
+            raise ButlerError(
+                f"no version declaration in {name}",
+                hint="[release] version_files names the files whose version the\n"
+                     "cut writes. butler looks for a line whose key is exactly\n"
+                     "'version' (or '__version__'), and there is none here.")
+        if found["version"] != version:
             stale.append(name)
-    if stale:
-        raise ButlerError(
-            f"{', '.join(stale)} do(es) not declare version {version}",
-            hint="Bump the version there, commit, and cut the release again.")
+    return stale
+
+
+def bump_version_file(path: Path, version: str) -> bool:
+    """Write `version` into the file's own version declaration.
+
+    Only that one declaration, and only its value: everything around it — the
+    quoting, the spacing, the rest of the file — is left exactly as it was,
+    because this runs over files whose format butler does not otherwise parse.
+    """
+    text = path.read_text()
+    found = declared_version(text)
+    if found is None:
+        raise ButlerError(f"no version declaration in {path.name} any more")
+    if found["version"] == version:
+        return False
+    path.write_text(text[:found.start("version")] + version + text[found.end("version"):])
+    return True
 
 
 # --------------------------------------------------------------------------- #
@@ -236,13 +283,17 @@ def preflight(ctx: Ctx, cfg: ReleaseConfig, args, version: str, tag: str) -> Pla
             hint=f"A release is cut from the work branch:\n  git checkout {cfg.source}")
 
     notes = read_notes(root, cfg, version)
-    if notes.promote is not None and on != cfg.source:
+    bump = tuple(stale_version_files(root, cfg, version))
+    if (notes.promote is not None or bump) and on != cfg.source:
+        writes = []
+        if notes.promote is not None:
+            writes.append(f"the notes are under '## [Unreleased]'")
+        if bump:
+            writes.append(f"{', '.join(bump)} still declare(s) another version")
         raise ButlerError(
-            f"the notes are under '## [Unreleased]', and this checkout is on "
-            f"'{on}'",
-            hint=f"Renaming that heading is a commit on the work branch:\n"
+            f"{'; and '.join(writes)} — and this checkout is on '{on}'",
+            hint=f"Writing those is a commit on the work branch:\n"
                  f"  git checkout {cfg.source}")
-    check_version_files(root, cfg, version)
     subject = cfg.subject(ctx.name, version)
 
     # Branches only. `--tags` would try to update every local tag from origin
@@ -349,7 +400,7 @@ def preflight(ctx: Ctx, cfg: ReleaseConfig, args, version: str, tag: str) -> Pla
                      f"git reset --hard origin/{cfg.into}")
 
     return Plan(version=version, tag=tag, subject=subject, notes=notes.text,
-                base=base, retag=retag, promote=notes.promote)
+                base=base, retag=retag, promote=notes.promote, bump=bump)
 
 
 def _is_attempt(ctx: Ctx, commit: str, base: str, subject: str) -> bool:
@@ -390,38 +441,59 @@ def _mirror_has_tag(ctx: Ctx, pub, tag: str) -> bool:
 # the steps
 # --------------------------------------------------------------------------- #
 
-def changelog(ctx: Ctx, cfg: ReleaseConfig, plan: Plan) -> None:
-    """Rename "## [Unreleased]" to this version, on the work branch.
+def prepare_subject(plan: Plan, cfg: ReleaseConfig) -> str:
+    """What the work branch's preparation commit is called."""
+    if plan.promote is not None and plan.bump:
+        return f"{plan.version}: the version, and the notes"
+    if plan.bump:
+        return f"version: {plan.version}"
+    return f"changelog: {plan.version}"
 
-    Before the squash, and committed rather than left in the working tree: the
-    release commit is a copy of the work branch's *tree*, so an uncommitted
-    edit here would be a changelog that says "Unreleased" in the release it
-    describes — and the build reads the same file to write the release notes.
 
-    Pushed too, because the build and the export both read Forgejo. Nothing
-    else in the cycle writes to the work branch; this does, which is why it
-    happens after every refusal in the preflight and not before.
+def prepare(ctx: Ctx, cfg: ReleaseConfig, plan: Plan) -> None:
+    """Write the version into the work branch: the notes' heading, the version
+    files, or both — as one commit, pushed.
+
+    Committed rather than left in the working tree because the release commit
+    is a copy of that branch's *tree*: an uncommitted edit would ship a
+    changelog still reading "Unreleased" in the release describing it, and a
+    version file still naming the version before this one. The build reads both
+    from Forgejo, which is why this pushes.
+
+    It is the one step in the cycle that writes to the work branch, so it runs
+    after every refusal in the preflight and not before.
     """
-    if plan.promote is None or cfg.changelog is None:
+    if plan.promote is None and not plan.bump:
         return
-    ui.plain(ui.bold(f"the notes: '## [Unreleased]' -> '## [{plan.version}]'"))
-    if ctx.would(f"rename the heading in {cfg.changelog}, commit it on "
-                 f"{cfg.source} and push"):
+    paths = list(plan.bump)
+    what = []
+    if plan.promote is not None:
+        what.append(f"'## [Unreleased]' -> '## [{plan.version}]' in {cfg.changelog}")
+    if plan.bump:
+        what.append(f"version {plan.version} in {', '.join(plan.bump)}")
+    ui.plain(ui.bold("the work branch: " + "; ".join(what)))
+    if ctx.would(f"write those, commit them on {cfg.source} and push"):
         return
-    path = ctx.root / cfg.changelog
-    lines = path.read_text().splitlines(keepends=True)
-    heading = lines[plan.promote]
-    if not UNRELEASED.match(heading.rstrip("\n")):
-        # The file changed under us between the preflight and here.
-        raise ButlerError(f"{cfg.changelog} line {plan.promote + 1} is no longer "
-                          f"the Unreleased heading")
-    lines[plan.promote] = f"## [{plan.version}]\n"
-    path.write_text("".join(lines))
-    ctx.check(["git", "commit", "--quiet", "-m", f"changelog: {plan.version}",
-               "--", cfg.changelog], what="commit the renamed heading")
+
+    if plan.promote is not None and cfg.changelog is not None:
+        path = ctx.root / cfg.changelog
+        lines = path.read_text().splitlines(keepends=True)
+        if not UNRELEASED.match(lines[plan.promote].rstrip("\n")):
+            # The file changed under us between the preflight and here.
+            raise ButlerError(f"{cfg.changelog} line {plan.promote + 1} is no longer "
+                              f"the Unreleased heading")
+        lines[plan.promote] = f"## [{plan.version}]\n"
+        path.write_text("".join(lines))
+        paths.append(cfg.changelog)
+
+    for name in plan.bump:
+        bump_version_file(ctx.root / name, plan.version)
+
+    ctx.check(["git", "commit", "--quiet", "-m", prepare_subject(plan, cfg),
+               "--", *paths], what="commit the version and the notes")
     ctx.check(["git", "push", "--quiet", "origin", cfg.source],
               what=f"push {cfg.source}")
-    ui.ok(f"{cfg.changelog}", f"the notes are {plan.version}'s now")
+    ui.ok(f"{cfg.source}", f"says {plan.version} now: {', '.join(paths)}")
 
 
 def merge(ctx: Ctx, cfg: ReleaseConfig, plan: Plan) -> str:
@@ -590,9 +662,13 @@ def publish_hint(plan: Plan) -> str:
 def describe(ctx: Ctx, cfg: ReleaseConfig, plan: Plan, args) -> None:
     pub = ctx.cfg.publish
     ui.plain(ui.bold(f"release {plan.version}"))
-    if plan.promote is not None:
-        ui.plain(f"  notes    '## [Unreleased]' -> '## [{plan.version}]', "
-                 f"committed on {cfg.source}")
+    if plan.promote is not None or plan.bump:
+        written = []
+        if plan.promote is not None:
+            written.append(f"'## [Unreleased]' -> '## [{plan.version}]'")
+        if plan.bump:
+            written.append(f"version {plan.version} in {', '.join(plan.bump)}")
+        ui.plain(f"  prepare  {'; '.join(written)} — committed on {cfg.source}")
     ui.plain(f"  squash   {cfg.source} -> {cfg.into}"
              + (f"  (rewinding to {plan.base[:12]})" if plan.retag else ""))
     ui.plain(f"  commit   {plan.subject}")
@@ -631,8 +707,8 @@ def cut(ctx: Ctx, args) -> int:
 
     # None of these check anything out: the branch is written with plumbing,
     # so the working tree this was run from is the working tree it ends in.
-    if "changelog" in steps:
-        changelog(ctx, cfg, plan)
+    if "prepare" in steps:
+        prepare(ctx, cfg, plan)
     target = merge(ctx, cfg, plan) if "merge" in steps else _sha(ctx, cfg.into)
     if not target:
         raise ButlerError(f"there is no local '{cfg.into}' to tag",
