@@ -136,9 +136,13 @@ then the newest.
 
 Unsigned and aligned intermediates are never install candidates. Swapping
 between a debug and a release build trips `INSTALL_FAILED_UPDATE_INCOMPATIBLE`
-because the signing keys differ; butler explains that this needs a clean install
-and that a clean install **wipes the app's on-device data**, then asks.
-`--reinstall` skips the question.
+because the signing keys differ, and so does a release signed with the wrong
+key. Getting past it needs a clean install, and a clean install **wipes the
+app's on-device data** — for an app that keeps its data locally, the only copy.
+So butler refuses and leaves the device as it was; only `--reinstall` uninstalls.
+It does not ask: until 0.8.5 it did, and `--yes` answered for it.
+
+`-n` installs nothing: the dry run names the APK it would install and stops.
 
 ---
 
@@ -557,7 +561,13 @@ push-public.sh
 ```
 
 `butler/butler.toml` is deliberately **not** excluded: how a project is built is
-part of what a published project tells you.
+part of what a published project tells you. Its `[publish]` table is stripped
+from the exported copy, because it names the private host. The strip runs from
+the table's header to the next line starting with `[`, so the comments above the
+table that follows `[publish]` go with it. **Put `[publish]` last in the file**
+to keep them. `publish check` reads the stripped file back, and says so if a
+table would be lost or a key would move. Through 0.8.4 the strip also glued the
+next table's header onto a comment line, which broke the exported file.
 
 Before this component each project hand-wrote its own `copy.bara.sky` and
 `push-public.sh`, which between them stated the exclude list twice — once as a

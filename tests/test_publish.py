@@ -296,13 +296,90 @@ def test_the_publish_table_is_stripped_from_the_exported_config():
 
 
 def test_the_strip_pattern_removes_the_table_and_nothing_else():
-    import re
-    pat = publish.PUBLISH_TABLE_RE
     toml = ('[project]\nname = "x"\n\n[publish]\nforgejo = "a/b"\n'
             'host = "h"\n\n[app]\nkind = "tauri"\n')
-    out = re.sub(pat, "\n", toml)
+    out = publish.exported_config(toml)
     assert "[publish]" not in out and "host" not in out
     assert '[project]' in out and '[app]' in out and 'kind = "tauri"' in out
+
+
+# The shape every real butler.toml has: a comment block above [publish], and a
+# section banner above the table after it. Until 0.8.5 the match was replaced
+# with nothing, which glued `[release]` onto the end of the comment line before
+# [publish] — chords' public mirror read `publish --tag v1.2.3[release]` — and
+# the release keys landed in [server.deploy].
+REAL_SHAPE = """[project]
+name = "x"
+
+[server.deploy]
+dir = "/srv"
+
+# ------------------------------------------------------------------ #
+# publish
+# ------------------------------------------------------------------ #
+
+# The mirror is generated; this comment is the last line before the table.
+[publish]
+forgejo = "a/b"
+# a comment inside the table
+host    = "h"
+
+# ------------------------------------------------------------------ #
+# release
+# ------------------------------------------------------------------ #
+
+# Its own comment, right above the header.
+[release]
+message = "release {version}"
+version_files = ["app.json"]
+"""
+
+
+def test_the_table_after_publish_keeps_its_header_and_its_keys():
+    out = publish.exported_config(REAL_SHAPE)
+    doc = tomllib.loads(out)
+    assert "publish" not in doc
+    assert doc["release"] == {"message": "release {version}", "version_files": ["app.json"]}
+    assert doc["server"]["deploy"] == {"dir": "/srv"}, "no key may move into the table before"
+    assert "\n[release]\n" in out, "the header must stay on a line of its own"
+    assert "this comment is the last line before the table.\n" in out
+
+
+def test_publish_last_in_the_file_loses_nothing_else():
+    last = REAL_SHAPE.split("# ------------------------------------------------------------------ #\n# release")[0]
+    last = last.replace('[project]\nname = "x"\n', '[project]\nname = "x"\n\n[release]\nmessage = "m"\n', 1)
+    doc = tomllib.loads(publish.exported_config(last))
+    assert set(doc) == {"project", "release", "server"}
+
+
+def test_the_copybara_transform_writes_what_exported_config_writes():
+    # The Python helper stands in for Copybara in `publish check` and in these
+    # tests, so the two replacements must be the same string — 0.8.4's test
+    # replaced with "\n" while the transform replaced with "", and passed.
+    assert publish.PUBLISH_TABLE_REPLACEMENT == "\n"
+    assert 'after = "\\n",' in publish.PUBLISH_TABLE_STRIP
+
+
+def test_check_says_when_the_exported_config_would_break(monkeypatch, capsys):
+    """`check` reads the stripped file back: a table that disappears or a key
+    that moves is reported before anything is exported."""
+    from types import SimpleNamespace
+
+    from butler import proc
+
+    monkeypatch.setattr(proc, "capture", lambda *a, **k: proc.Result(0, REAL_SHAPE, ""))
+    ctx = SimpleNamespace(root="/proj")
+    cfg = SimpleNamespace(branch="main")
+    publish._check_exported_config(ctx, cfg, ["butler/butler.toml"])
+    out = capsys.readouterr()
+    assert "every table intact" in out.out + out.err
+    assert "put [publish] last" in out.out + out.err
+
+    monkeypatch.setattr(publish, "exported_config",
+                        lambda text: text.replace("\n[release]\n", "[release]\n"))
+    publish._check_exported_config(ctx, cfg, ["butler/butler.toml"])
+    out = capsys.readouterr()
+    assert "broken:" in out.out + out.err
 
 
 def test_the_rewrite_can_be_turned_off():

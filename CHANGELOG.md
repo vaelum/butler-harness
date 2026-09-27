@@ -9,6 +9,42 @@ here is what projects actually consume — keep these sections accurate before
 tagging. `butler.py --version` reports the version in use and the pin the
 project asked for.
 
+## [0.8.5]
+
+### Fixed
+
+- **The exported `butler.toml` lost the table after `[publish]`.** The strip
+  matches from the newline *before* the `[publish]` header, and replaced the
+  match with nothing. So the next table's header was glued onto the end of the
+  comment line above `[publish]`, where it stopped being a header, and its keys
+  fell into whichever table came before. chords' public mirror shipped
+  `#   python butler.py publish --tag v1.2.3[release]`, with its `[release]` keys
+  under `[extension.firefox]`; lifestack's first release put its own under
+  `[server.deploy]`. The match is now replaced with one newline.
+
+  The test that should have caught it replaced with `"\n"` while the transform
+  replaced with `""`. Both now use `PUBLISH_TABLE_REPLACEMENT`, and the test runs
+  on the shape a real `butler.toml` has, parsed with `tomllib`. What the pattern
+  still cannot help, without the lookahead RE2 lacks, is taking the next table's
+  leading comments with it, so `[publish]` is best kept last in the file.
+
+- **`publish check` reads the exported `butler.toml` back.** It applies the strip,
+  parses the result, and compares every table and key with the private file, so
+  a config the export would break is reported before anything is exported. It
+  also says when a table follows `[publish]`.
+
+- **A key mismatch no longer offers to wipe the phone.** On
+  `INSTALL_FAILED_UPDATE_INCOMPATIBLE`, `android install` and `build --install`
+  asked whether to uninstall first, and `--yes` answered yes on their own. For a
+  release signed with the wrong key, an unattended run deleted the app's data on
+  the device — for an app that keeps it locally, the only copy. The install is now
+  refused with the device untouched; only an explicit `--reinstall` uninstalls.
+
+- **`-n` is honest about Android.** `android build -n` "signed" nothing, then tried
+  to copy the APK it never made (`FileNotFoundError`). And `install_apk` ran
+  `adb install` under `-n`, because `proc.capture` does not look at the dry-run
+  flag.
+
 ## [0.8.4]
 
 ### Changed

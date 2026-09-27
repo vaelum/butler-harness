@@ -80,14 +80,33 @@ HARNESS_PIN_PATHS = ("butler.py", "src/butler/new.py", "*.md", "**/*.md")
 MD_PATHS = ("*.md", "**/*.md")
 
 
-# Removes the [publish] table from an exported butler.toml: the header, then
-# every following line that does not start a new table. Written without a
-# lookahead on purpose — Copybara matches with RE2, which has none — and as a
-# named constant because the escaping is awkward enough to be worth doing once.
-# The [publish] table: its header, then every following line that does not start
-# a new table. Written without a lookahead on purpose — Copybara matches with
-# RE2, which has none.
+# The [publish] table in an exported butler.toml: the newline before its header,
+# the header, then every following line that does not start a new table. Written
+# without a lookahead on purpose — Copybara matches with RE2, which has none — and
+# as a named constant because the escaping is awkward enough to be worth doing
+# once.
+#
+# The match starts at the newline BEFORE the header, so it is replaced with one
+# newline, not with nothing. Through 0.8.4 it was replaced with nothing, which
+# glued the next table's header onto the end of the line above it — a comment,
+# in every butler.toml — where it stopped being a header, and its keys fell into
+# whichever table came before [publish]. chords' public mirror shipped that way
+# (`publish --tag v1.2.3[release]`), and so did lifestack's first release.
+#
+# What the pattern cannot help, without the lookahead RE2 lacks, is taking the
+# next table's leading comments with it: they sit between the last [publish] key
+# and the next header, and nothing in a comment line says which table it
+# belongs to. `publish check` says so when a table follows [publish]; putting
+# [publish] last in the file avoids it.
 PUBLISH_TABLE_RE = r"\n\[publish\]\n(?:[^\[\n][^\n]*\n|\n)*"
+PUBLISH_TABLE_REPLACEMENT = "\n"
+
+
+def exported_config(text: str) -> str:
+    """butler.toml as the export writes it: the Copybara transform below, done in
+    Python. Python's `re` and RE2 agree on this pattern; `publish check` uses this
+    to read the exported file back before anything is exported."""
+    return re.sub(PUBLISH_TABLE_RE, PUBLISH_TABLE_REPLACEMENT, text)
 
 # Every Co-authored-by trailer, whatever its case. The author of an exported
 # commit is already pinned by `authoring.overwrite`, but a trailer lives in the
@@ -107,7 +126,7 @@ COAUTHOR_STRIP = f'    metadata.scrubber("{COAUTHOR_RE}", replacement = ""),'
 PUBLISH_TABLE_STRIP = f"""    core.transform([
         core.replace(
             before = "${{table}}",
-            after = "",
+            after = "\\n",
             regex_groups = {{"table": r"{PUBLISH_TABLE_RE}"}},
             paths = glob(["butler/butler.toml"]),
             multiline = True,
@@ -463,7 +482,59 @@ def check(ctx: Ctx, args) -> int:
     # has not thought about it yet, rather than one with nothing to hide.
     if cfg.is_public and not held:
         ui.warn("note:", "this is a public export and nothing is being held back.")
+    _check_exported_config(ctx, cfg, shipped)
     return 0
+
+
+def _check_exported_config(ctx: Ctx, cfg: PublishConfig, shipped: list[str]) -> None:
+    """Read the exported butler.toml back, as the export will write it.
+
+    A config the strip breaks is a mirror whose butler.py fails on its first
+    command, and nothing in the export itself notices. So the stripped file is
+    parsed here, and every table the private one has — [publish] aside — must
+    still be there with the same keys.
+    """
+    import tomllib
+
+    path = "butler/butler.toml"
+    if path not in shipped:
+        return
+    shown = proc.capture(["git", "show", f"{cfg.branch}:{path}"], cwd=ctx.root)
+    if not shown.ok:
+        return
+    private = shown.out
+    exported = exported_config(private)
+
+    def tables(doc: dict, prefix: str = "") -> dict[str, set[str]]:
+        out: dict[str, set[str]] = {}
+        for key, value in doc.items():
+            if isinstance(value, dict):
+                name = f"{prefix}{key}"
+                out[name] = {k for k, v in value.items() if not isinstance(v, dict)}
+                out.update(tables(value, f"{name}."))
+        return out
+
+    ui.plain()
+    ui.plain(ui.bold("  butler.toml as exported"))
+    try:
+        want = {k: v for k, v in tables(tomllib.loads(private)).items() if k != "publish"}
+        got = tables(tomllib.loads(exported))
+    except tomllib.TOMLDecodeError as exc:
+        ui.warn("broken:", f"the exported {path} does not parse ({exc})")
+        return
+    if got != want:
+        lost = sorted(set(want) - set(got))
+        moved = sorted(k for k in set(want) & set(got) if want[k] != got[k])
+        ui.warn("broken:", f"stripping [publish] changes the rest of {path}"
+                           + (f": {', '.join(lost)} lost" if lost else "")
+                           + (f"; keys moved in {', '.join(moved)}" if moved else ""))
+        return
+    after = private.split("\n[publish]\n", 1)[1] if "\n[publish]\n" in private else ""
+    if any(line.startswith("[") for line in after.splitlines()):
+        ui.plain(ui.dim("    parses, every table intact; the comments above the table after "
+                        "[publish] are dropped — put [publish] last to keep them"))
+    else:
+        ui.plain(ui.dim("    parses, every table intact, [publish] removed"))
 
 
 def _coauthored(ctx: Ctx, cfg: PublishConfig) -> int:

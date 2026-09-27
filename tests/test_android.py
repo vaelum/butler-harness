@@ -220,3 +220,102 @@ def test_the_keystore_password_never_reaches_the_command_line(tmp_path, monkeypa
     assert "s3cret" not in printable and "k3ypass" not in printable
     assert "env:BUTLER_KS_PASS" in printable
     assert env["BUTLER_KS_PASS"] == "s3cret" and env["BUTLER_KEY_PASS"] == "k3ypass"
+
+
+# --------------------------------------------------------------------------- #
+# installing never deletes data on its own, and --dry-run installs nothing
+# --------------------------------------------------------------------------- #
+
+def _install_ctx(tmp_path, *, dry_run=False, assume_yes=False):
+    from butler.config import Config, ProjectConfig
+    from butler.context import Ctx
+
+    return Ctx(cfg=Config(root=tmp_path, project=ProjectConfig(name="demo", dist=Path("dist"))),
+               dry_run=dry_run, assume_yes=assume_yes)
+
+
+def _fake_adb(monkeypatch, tmp_path, install_output):
+    """A device that answers `install -r` with `install_output`; returns the
+    list of adb commands run, so a test can say what never happened."""
+    from types import SimpleNamespace
+
+    from butler import proc
+
+    tc = SimpleNamespace(env={}, tool=lambda name: name)
+    monkeypatch.setattr(android, "toolchain", lambda cfg, **k: tc)
+    monkeypatch.setattr(android, "pick_device", lambda adb, env, device=None: "SERIAL")
+    monkeypatch.setattr(android, "app_identifier", lambda app: "com.example.demo")
+    ran = []
+
+    def capture(cmd, *a, **k):
+        cmd = [str(c) for c in cmd]
+        ran.append(cmd)
+        if "install" in cmd:
+            return proc.Result(1, "", install_output)
+        return proc.Result(0, "", "")
+
+    monkeypatch.setattr(proc, "capture", capture)
+    apk = tmp_path / "demo-v1.apk"
+    apk.write_bytes(b"x")
+    return ran, apk
+
+
+@pytest.mark.parametrize("assume_yes", [False, True])
+def test_a_key_mismatch_is_refused_and_never_uninstalls(monkeypatch, tmp_path, assume_yes):
+    """Until 0.8.5 this was a y/N prompt that --yes answered by itself: an
+    unattended install of a release signed with the wrong key wiped the app's
+    data on the device."""
+    from butler.errors import ButlerError
+
+    ran, apk = _fake_adb(monkeypatch, tmp_path,
+                         "Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE: signatures do not match]")
+    with pytest.raises(ButlerError, match="different key") as err:
+        android.install_apk(_install_ctx(tmp_path, assume_yes=assume_yes), None, None, [apk])
+    assert "--reinstall" in err.value.hint
+    assert not any("uninstall" in c for c in ran), "nothing may be uninstalled"
+
+
+def test_reinstall_is_the_one_way_to_uninstall(monkeypatch, tmp_path):
+    from butler.errors import ButlerError
+
+    ran, apk = _fake_adb(monkeypatch, tmp_path, "Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE]")
+    with pytest.raises(ButlerError, match="adb install failed"):
+        android.install_apk(_install_ctx(tmp_path), None, None, [apk], reinstall=True)
+    assert any("uninstall" in c for c in ran)
+
+
+def test_install_under_dry_run_runs_no_adb(monkeypatch, tmp_path):
+    """proc.capture ignores --dry-run, so before 0.8.5 `-n` really installed."""
+    ran, apk = _fake_adb(monkeypatch, tmp_path, "")
+    assert android.install_apk(_install_ctx(tmp_path, dry_run=True), None, None, [apk]) == 0
+    assert ran == []
+
+
+def test_build_under_dry_run_does_not_copy_apks_it_never_made(monkeypatch, tmp_path):
+    """The dry run "signs" nothing, then copied the APK it never made and died
+    with FileNotFoundError (0.8.4 and earlier)."""
+    from types import SimpleNamespace
+
+    from butler import sources
+    from butler.config import AndroidConfig
+
+    outputs = tmp_path / "gen" / "app" / "build" / "outputs"
+    (outputs / "apk" / "universal" / "release").mkdir(parents=True)
+    (outputs / "apk" / "universal" / "release" / "app-universal-release-unsigned.apk").write_bytes(b"x")
+    cfg = AndroidConfig(key_name="demo", dname="", env_prefix="DEMO")
+    for k, v in {"KEYSTORE": "/k.jks", "KS_PASS": "s", "KEY_ALIAS": "a", "KEY_PASS": "p"}.items():
+        monkeypatch.setenv(f"DEMO_ANDROID_{k}", v)
+    app = SimpleNamespace(dir=tmp_path)
+    monkeypatch.setattr(android, "_cfg", lambda ctx: (app, cfg))
+    monkeypatch.setattr(sources, "prepare", lambda ctx: None)
+    monkeypatch.setattr(android, "toolchain", lambda c, **k: SimpleNamespace(env={}, build_tools=tmp_path))
+    monkeypatch.setattr(android, "prepare_gen", lambda *a: None)
+    monkeypatch.setattr(android, "gen_dir", lambda a: tmp_path / "gen")
+    monkeypatch.setattr(android, "keystore_for", lambda ctx, a, c: android.Keystore(
+        tmp_path, tmp_path / "k.jks", tmp_path / "none.properties", False))
+    args = SimpleNamespace(debug=False, no_sign=False, universal=False, split_abi=False, install=False)
+    ctx = _install_ctx(tmp_path, dry_run=True)
+    assert android.build(ctx, args) == 0
+    assert not (tmp_path / "dist").exists()
+    assert (outputs / "apk" / "universal" / "release" / "app-universal-release-unsigned.apk").exists()
+

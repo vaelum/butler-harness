@@ -546,6 +546,10 @@ def app_identifier(app: TauriConfig) -> str:
 def install_apk(ctx: Ctx, app: TauriConfig, cfg: AndroidConfig, apks,
                 *, device=None, reinstall=False, logcat=False) -> int:
     """Sideload an APK onto an attached phone and launch it."""
+    # proc.capture runs whatever it is given, dry run or not, so without this
+    # `-n` really installed.
+    if ctx.would("adb install -r the newest installable APK onto the attached device"):
+        return 0
     tc = toolchain(cfg)
     assert tc
     candidates = installable_apks(apks)
@@ -583,20 +587,18 @@ def install_apk(ctx: Ctx, app: TauriConfig, cfg: AndroidConfig, apks,
     if r.rc != 0 and not reinstall and (
             "INSTALL_FAILED_UPDATE_INCOMPATIBLE" in r.combined
             or "signatures do not match" in r.combined):
-        # Debug and release APKs carry different signing keys, so swapping
-        # between them needs a clean install — which wipes the app's on-device
-        # data. Ask rather than doing that silently.
-        ui.plain()
-        ui.plain(f"The installed {app_id} is signed with a different key (debug vs release).")
-        ui.plain("Uninstalling it first " +
-                 ui.bold("wipes the app's local data on the device") +
-                 " (server-synced data survives).")
-        if not ctx.confirm("Continue?"):
-            ui.plain("Aborted. Re-run with --reinstall to skip this prompt.")
-            return 1
-        uninstall()
-        r = do_install()
-        ui.plain(r.combined.strip())
+        # Refused, not asked. Getting past a key mismatch means uninstalling,
+        # and uninstalling deletes everything the app keeps on the device — for
+        # an app that keeps its data locally, the only copy. Until 0.8.5 this was
+        # a y/N prompt, which --yes answered by itself: an unattended run could
+        # wipe a phone because a release came out signed with the wrong key.
+        # Deleting the data is now something only an explicit --reinstall does.
+        raise ButlerError(
+            f"the installed {app_id} is signed with a different key",
+            hint="Nothing was changed on the device. A debug and a release build carry\n"
+                 "different keys, and so does a release signed with the wrong one.\n"
+                 "Getting past it means uninstalling, which WIPES the app's data on the\n"
+                 "device. To do that deliberately, re-run with --reinstall.")
 
     if r.rc != 0:
         raise ButlerError("adb install failed", code=r.rc)
@@ -663,7 +665,12 @@ def build(ctx: Ctx, args) -> int:
     else:
         ks = keystore_for(ctx, app, cfg)
         signed = sign_release_apks(ctx, cfg, ks, tc, outputs)
-        if signed:
+        if signed and ctx.would(f"copy {', '.join(p.name for p in signed)} "
+                                f"to {ctx.disp(ctx.dist)}"):
+            # Named, not made: under --dry-run apksigner never ran, so there is
+            # nothing to copy — this used to fail on the missing file.
+            built = signed
+        elif signed:
             ctx.dist.mkdir(parents=True, exist_ok=True)
             built = []
             for p in signed:
