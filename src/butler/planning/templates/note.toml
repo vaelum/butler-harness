@@ -1,0 +1,14 @@
+#:schema {schema}
+kind = "note"
+id = "{id}"
+title = "{title}"
+summary = "What this note holds, and which items read it."
+created = {today}
+updated = {today}
+
+[[section]]
+id = "overview"
+title = "Overview"
+body = '''
+The context several items share.
+'''

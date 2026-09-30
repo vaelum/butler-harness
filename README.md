@@ -22,10 +22,13 @@ Implemented components: `app` (Tauri desktop + Android), `server` (FastAPI,
 Compose or the project's own scripts), `extension` (Chrome + Firefox bundles),
 `build` (CMake + Docker buildenv), `check` (MegaLinter + clang-tidy),
 `publish` (Copybara export to a public mirror), `release` (squash, tag, wait
-for the build, export), plus `doctor`.
+for the build, export), plus `doctor` and `planning` (typed plans, decisions and
+approvals, served for every repository by one local service).
 
 - [docs/new-project.md](docs/new-project.md) — adding a butler to a project
 - [docs/components.md](docs/components.md) — every config key and command
+- `python butler.py planning guide` — how to write and keep plans (for agents
+  and people), shipped with the harness
 
 ## The shape of it
 
@@ -47,6 +50,7 @@ butler.py server dev | down | logs | test | deploy
 butler.py extension package
 butler.py release 1.2.3 --check
 butler.py doctor
+butler.py planning serve        # typed plans in the browser, every repository at once
 ```
 
 Commands appear only when the config declares that component, so `--help` is

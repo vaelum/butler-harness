@@ -45,7 +45,8 @@ def test_tree_follows_the_config():
 
 def test_components_absent_from_the_config_have_no_commands():
     _, roots, _ = build('[project]\nname = "demo"\n')
-    assert [n.name for n in roots] == ["doctor"]
+    # doctor and planning apply to every project, so they are always there.
+    assert [n.name for n in roots] == ["doctor", "planning"]
 
 
 def test_server_commands_track_the_config():

@@ -482,6 +482,12 @@ class ReleaseConfig:
 
 
 @dataclass
+class PlanningConfig:
+    """`[planning]`: optional; the command exists in every project either way."""
+    dir: str = "planning"
+
+
+@dataclass
 class ProjectConfig:
     name: str
     dist: Path
@@ -500,6 +506,7 @@ class Config:
     check: CheckConfig | None = None
     publish: PublishConfig | None = None
     release: ReleaseConfig | None = None
+    planning: PlanningConfig = field(default_factory=PlanningConfig)
     # Sections that parsed as "planned but unimplemented"; the CLI turns each
     # into a command that says so rather than pretending it doesn't exist.
     planned: dict[str, str] = field(default_factory=dict)
@@ -573,6 +580,7 @@ def parse(raw: dict, root: Path) -> Config:
     check = _check(top.table("check"), root, project.name)
     publish = _publish(top.table("publish"), project.name)
     release = _release(top.table("release"), publish)
+    planning = _planning(top.table("planning"))
 
     planned = {}
     for name, milestone in PLANNED_SECTIONS.items():
@@ -582,7 +590,17 @@ def parse(raw: dict, root: Path) -> Config:
 
     return Config(root=root, project=project, app=app, server=server,
                   extension=extension, build=build, check=check, publish=publish,
-                  release=release, planned=planned)
+                  release=release, planning=planning, planned=planned)
+
+
+def _planning(t: Table | None) -> PlanningConfig:
+    if t is None:
+        return PlanningConfig()
+    d = t.str_("dir", "planning")
+    t.done()
+    if not d or d.startswith("/") or ".." in Path(d).parts:
+        raise ConfigError(f"[planning] dir must be a folder inside the project, got {d!r}")
+    return PlanningConfig(dir=d)
 
 
 def _publish(t: Table | None, project_name: str) -> PublishConfig | None:

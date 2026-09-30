@@ -1,0 +1,51 @@
+#:schema {schema}
+kind = "plan"
+id = "{id}"
+title = "{title}"
+summary = "One or two sentences: what this plan does and why."
+created = {today}
+updated = {today}
+why = '''
+Why the work is worth doing: what is wrong or missing today, as checked on
+{today}.
+'''
+
+[scope]
+in = ["What the plan does."]
+out = ["What it deliberately does not."]
+
+# One [[decision]] per question for the user. Delete the block if there is none.
+[[decision]]
+id = "first-question"
+question = "What should the user decide?"
+context = '''
+What the user needs to know to answer, with the facts as checked on the date below.
+'''
+as_of = {today}
+recommend = "a"
+because = "Why a."
+
+  [[decision.option]]
+  id = "a"
+  label = "The first option"
+  hint = "what picking it means"
+
+  [[decision.option]]
+  id = "b"
+  label = "The second option"
+
+[[phase]]
+id = "p1"
+title = "The first phase"
+goal = "What is true when it is done."
+
+  [[phase.step]]
+  id = "s1-1"
+  title = "One checkable outcome"
+  by = "agent"
+  needs = ["first-question"]
+  done_when = "How to tell it is done."
+
+[[log]]
+on = {today}
+text = "Drafted."

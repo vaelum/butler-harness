@@ -2,7 +2,8 @@
 
 Every section of `butler.toml` is optional. A component's commands exist only
 when its section is present, so `python butler.py --help` is always an accurate
-description of the project.
+description of the project. `doctor` and `planning` are the exceptions: they
+apply to every project, so they are always there.
 
 Unknown keys and wrong types are errors naming the offending key — a typo never
 silently does nothing.
@@ -756,3 +757,107 @@ instead.
 The rewind is equally narrow: the only commit it will discard is the release
 commit butler itself made. A publication branch sitting on anything else stops
 the run rather than losing whatever is there.
+
+---
+
+## `planning` — typed plans, and one local service for every repository
+
+Always present, like `doctor`. The full rules for writing plans are the agent
+guide, printed by `python butler.py planning guide`; this section is the
+reference for the command and its configuration.
+
+```toml
+[planning]
+dir = "planning"   # the default; the only key
+```
+
+### The folder
+
+```
+planning/
+  planning.toml   format = 1, user, plan_approval — makes the folder typed (`planning init`)
+  draft/ todo/ in-progress/ done/   the folder is an item's state
+  notes/          context several items share
+  answers/        <id>.json — the user's answers, written only by the service
+  .schema/        v1.json, for editors (`planning schema`)
+```
+
+Each item is one TOML file with a `kind` (`plan`, `decision`, `review`,
+`note`) and an `id` (`p-3p758x`) that never changes: the answers file, the
+page's URL and every reference use it, so moving or renaming the file breaks
+nothing. Prose fields (`why`, `context`, `details`, `body`) hold Markdown. The
+keys of each kind are generated into the guide from `planning/types.py`, and
+`planning schema` writes the same definitions as a JSON Schema; `planning new`
+puts a `#:schema` line in each file so a TOML language server validates while
+typing.
+
+Markdown plans and the forms prototype's HTML files are shown read-only and
+reported as warnings. `planning convert FILE` makes a typed skeleton from
+either; from a form it also carries the answers file across, each entry marked
+with its source.
+
+### Commands
+
+| command | does | service |
+|---|---|---|
+| `init` | `planning.toml`, the folders, the schema | no |
+| `new KIND NAME [--title T] [--folder F]` | a new item with a fresh id | no |
+| `check [--strict] [--all] [--no-git] [--json]` | validate the folder; exit 1 on an error | no |
+| `status [ID] [--json]` | what waits on the user and on the agent | no |
+| `list [WHAT] [--all] [--by agent\|user] [--everywhere] [--json]` | items, decisions, steps, approvals, comments or findings | no |
+| `show ID [--json]` | an item as text | no |
+| `move ID FOLDER` | `git mv`, after checking the target folder's rules | no |
+| `gate ID [STEP]` | exit 0 only if approved and unchanged since | no |
+| `resolve ID COMMENT --note TEXT` | mark a comment handled | no |
+| `convert FILE` | a skeleton from a `.md` plan or a prototype `.html` form | no |
+| `schema` | write `.schema/v1.json` | no |
+| `guide` | print the agent guide | no |
+| `serve [--port N] [--open]` | start the service if needed, register this repository, print its URL | yes |
+| `service [status\|stop\|restart\|logs]` | the service itself | yes |
+| `forget [PATH]` | unregister a repository | yes |
+
+`check` groups its rules: the layout; each file (TOML, keys, types, dates not
+in the future); ids (well formed, unique across the folder, unchanged since
+`HEAD`); references (all resolve, no cycles in `needs`); the folder fits the
+content (a plan in `todo/` has no open decision and, with `plan_approval`, the
+user's approval; one in `done/` has every step done or dropped); and the
+answers agree with the files. A gated step that is active or done without a
+current approval is an error, so a skipped gate fails CI.
+
+### Approvals
+
+A step with `gate = true` needs the user's approval, given in the page. The
+service stores the sha256 of the step (every field but `state`, `commit` and
+`reason`) and a snapshot of it. Editing the step afterwards makes the approval
+stale: `gate` fails and the page shows the difference. A plan's own approval
+covers its phases and steps the same way. `gate` prints one line — approved by
+whom, when, unchanged since — which is the evidence an agent quotes before the
+action.
+
+### The service
+
+One process per user serves every registered repository at
+`http://127.0.0.1:8765/` (`BUTLER_PLANNING_PORT` or `serve --port` change the
+port when it starts). `serve` probes it, and only if nothing answers takes a
+lock, probes again and starts it detached — `python -P`, with the state
+directory as cwd, never `-m butler` from a project root, whose `butler/` folder
+would shadow the package. A service with an older API level is stopped and
+replaced; the registry is on disk, so nothing is lost. A worktree registers as
+itself (`lifestack-w0-cli`) and is grouped under its main checkout.
+
+State lives in `$XDG_STATE_HOME/butler/planning/`: `service.json`,
+`repos.json`, `token` (0600), `service.log` (rotated at 1 MB).
+
+It binds 127.0.0.1 only and checks the Host header. Writes need the header
+`X-Butler-Planning` and a same-origin `Origin`, so no website can write; the
+control API (register, forget, shutdown) needs the token. Pages carry a
+Content-Security-Policy without inline script, and a plan's raw HTML is shown
+as text. Open pages follow the files: the service watches the planning
+folders and tells each page over Server-Sent Events (`/api/events`) when a file
+behind it changes, so an agent's edit shows within a second; a tab left open
+across a service upgrade reloads itself. Each item's page opens with the user's to-do: what to answer
+or approve now, their own steps that are ready (every `needs` finished), what
+is coming up for them, and every step not done yet; "Only what is open" folds
+the finished work and the long reading away. Only files under a registered planning folder are served. The service
+never writes an item; the user's answers, ticks, approvals and comments go to
+`answers/<id>.json`, one entry per write, under a lock.

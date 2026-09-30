@@ -9,6 +9,56 @@ here is what projects actually consume — keep these sections accurate before
 tagging. `butler.py --version` reports the version in use and the pin the
 project asked for.
 
+## [0.9.0]
+
+### Added
+
+- **`planning`: typed plans, decisions and approvals, in every project.** A
+  project's `planning/` folder holds TOML files of four kinds — `plan`,
+  `decision`, `review` and `note` — each with an id (`p-3p758x`) that never
+  changes, so moving an item from `draft/` to `todo/` or renaming it breaks no
+  link, answer or reference. The folder is still the state. Prose fields hold
+  Markdown; everything a program acts on (owners, states, gates, dates,
+  references) is a typed field, checked strictly as `butler.toml` is.
+
+- **`planning check` validates the whole folder**, file and line: TOML, keys and
+  types, dates not in the future, ids unique and unchanged since `HEAD`,
+  references and `needs` cycles, whether each item's content fits its folder,
+  and whether the user's answers and approvals agree with the files. A gated
+  step that is done without a current approval is an error, so a skipped gate
+  fails CI. It needs no service.
+
+- **Approval gates.** A step with `gate = true` is approved or disapproved by
+  the user in the page; the approval is bound to the step's text (a sha256 of
+  every field but its state), so editing the step afterwards makes it stale.
+  `planning gate ID STEP` exits 0 only on a current approval and prints the
+  line an agent quotes before acting. Plans are approved as a whole before they
+  leave `draft/` (`plan_approval`).
+
+- **`planning serve`: one local service for every repository.** The first
+  `serve` starts it detached on `127.0.0.1:8765`; every later one, from any
+  repository or worktree, registers with it and prints the URL. The pages show
+  what waits on the user across all repositories, and per item: decisions to
+  answer, the user's own steps to tick, gates to approve with the difference
+  since an earlier answer, comments on any part, and the agent's progress,
+  shown within a second of the file changing (the service pushes a change
+  event; a tab left open across an upgrade reloads itself). Each page opens with
+  the user's to-do (what to answer or approve now, their own steps that are
+  ready, what is coming up, every step not done), and "Only what is open"
+  hides the finished work. The service never writes an item: the user's input
+  goes to `planning/answers/<id>.json`, one entry per write. A newer harness
+  replaces an older service; the registry survives restarts.
+
+- **Commands for agents**: `init`, `new`, `status`, `list` (decisions, steps,
+  approvals, comments, findings; `--everywhere` across registered repositories),
+  `show`, `move` (checks the target folder's rules), `resolve`, `convert` (a
+  typed skeleton from a Markdown plan or a forms-prototype HTML form, carrying
+  its answers), `schema` (a JSON Schema for editors), and `guide` — the agent
+  guide, shipped with the harness so it matches each project's pin. Its
+  reference tables are generated from the type definitions.
+
+- `[planning] dir` names the folder, if it is not `planning`.
+
 ## [0.8.5]
 
 ### Fixed

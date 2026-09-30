@@ -12,6 +12,7 @@ from . import command, components, config, doctor, tasks, ui
 from .command import Node
 from .context import Ctx
 from .errors import ButlerError
+from .planning import commands as planning_commands
 
 PROG = "butler.py"
 
@@ -23,6 +24,8 @@ PROG = "butler.py"
 def build_tree(cfg: config.Config, project_tasks: list[tasks.Task]) -> list[Node]:
     roots = components.tree(cfg)
     roots.append(doctor.node())
+    # Every project may have plans, so like doctor this is always there.
+    roots.append(planning_commands.node())
     for name, milestone in sorted(cfg.planned.items()):
         roots.append(_planned(name, milestone))
     overlay(roots, project_tasks)

@@ -1,0 +1,22 @@
+#:schema {schema}
+kind = "review"
+id = "{id}"
+title = "{title}"
+summary = "What was reviewed, and what came of it."
+created = {today}
+updated = {today}
+subject = '''
+What was reviewed, and at which commit.
+'''
+method = '''
+How, and how far each finding was checked.
+'''
+
+[[finding]]
+id = "f1"
+title = "The finding in one line"
+severity = "medium"
+area = "where"
+details = '''
+What exactly.
+'''

@@ -1,0 +1,23 @@
+#:schema {schema}
+kind = "decision"
+id = "{id}"
+title = "{title}"
+summary = "The question in one sentence."
+created = {today}
+updated = {today}
+question = "What should the user decide?"
+context = '''
+What the user needs to know to answer, as checked on the date below.
+'''
+as_of = {today}
+recommend = "a"
+because = "Why a."
+
+[[option]]
+id = "a"
+label = "The first option"
+hint = "what picking it means"
+
+[[option]]
+id = "b"
+label = "The second option"
