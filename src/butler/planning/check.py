@@ -299,7 +299,9 @@ def _check_item_content(report: Report, item: Item, ids: dict[str, Item], ans: d
         line = item.line_of(Problem("error", "", local=local)) if item.kind != "decision" else None
         opts = [o for o in dec.get("option", []) if isinstance(o, dict)]
         oids = [o.get("id") for o in opts]
-        if not 2 <= len(opts) <= 4:
+        # The limit keeps an open question answerable. A resolved one is only
+        # read, and may keep every option it was answered with (an old form's).
+        if len(opts) < 2 or (len(opts) > 4 and not dec.get("resolved")):
             report.add(rel, "error", f"decision {local}: has {len(opts)} options; give two to four", line)
         if len(set(oids)) != len(oids):
             report.add(rel, "error", f"decision {local}: two options share an id", line)

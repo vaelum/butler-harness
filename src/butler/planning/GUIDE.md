@@ -76,7 +76,8 @@ to answer it is in the decision itself.
   checked on `as_of`. The user answers from this, not from a chat.
 - Two to four options. Each stands on its own and says what picking it
   means (`hint`). No straw men, no "other" (the user can always write an own
-  answer unless `own_answer = false`).
+  answer unless `own_answer = false`). Only a decision that is already
+  resolved may keep more, as the old forms' decisions do once converted.
 - One `recommend`, and a `because` that gives the reason in one sentence.
   With `multiple = true`, `recommend` may be a list.
 - Ask decisions through the page, not in chat: after writing them run
@@ -247,7 +248,7 @@ The service is one process per user for every repository, on
 | `question` | string | yes | one question, ending in a question mark |
 | `as_of` | date |  | when the facts in `context` were checked |
 | `multiple` | boolean | default `false` | more than one option may be chosen |
-| `option` | `[[option]]` | yes | two to four options |
+| `option` | `[[option]]` | yes | two to four options (a resolved decision may keep more) |
 | `recommend` | string or list of strings |  | the recommended option id (a list if `multiple`) |
 | `because` | string |  | why that option; required with `recommend` |
 | `own_answer` | boolean | default `true` | the user may write their own answer |
@@ -279,7 +280,7 @@ The service is one process per user for every repository, on
 | `context` | prose (Markdown) |  | what the user needs to know to answer |
 | `as_of` | date |  | when the facts in `context` were checked |
 | `multiple` | boolean | default `false` | more than one option may be chosen |
-| `option` | `[[option]]` | yes | two to four options |
+| `option` | `[[option]]` | yes | two to four options (a resolved decision may keep more) |
 | `recommend` | string or list of strings |  | the recommended option id (a list if `multiple`) |
 | `because` | string |  | why that option; required with `recommend` |
 | `own_answer` | boolean | default `true` | the user may write their own answer |

@@ -88,6 +88,9 @@ class Draft:
                 out.append(f"context = {prose(d['context'])}")
             if d.get("multiple"):
                 out.append("multiple = true")
+            if d.get("resolved"):
+                out += [f"resolved = {arr(d['resolved'])}", f"outcome = {q(d['outcome'])}",
+                        f"resolved_on = {d['resolved_on']}"]
             out.append("")
             for o in d["options"]:
                 out += ["  [[decision.option]]", f'  id = "{o["id"]}"', f"  label = {q(o['label'])}"]
@@ -123,6 +126,67 @@ def _first_sentence(text: str) -> str:
 _BOX = re.compile(r"^(\s*)[-*] \[([ xX~!-])\] (.*)$")
 
 
+_STATUS = re.compile(r"^\W*status\b", re.I)
+
+
+def _summary(why: str) -> str:
+    """The first sentence of `why`, past a leading "Status: …" paragraph."""
+    paras = [p for p in re.split(r"\n\s*\n", why) if p.strip()]
+    while len(paras) > 1 and _STATUS.match(paras[0]):
+        paras = paras[1:]
+    return _first_sentence(paras[0]) if paras else ""
+
+
+def _split_title(text: str) -> tuple[str, str]:
+    """A plain bullet's first sentence as the step's title, the rest as its details."""
+    flat = " ".join(text.split())
+    m = re.match(r"(.+?[.!?])(\s|$)", flat)
+    head = m.group(1) if m else flat
+    if len(head) > 120:
+        head = head[:120].rsplit(" ", 1)[0] + "…"
+        return head, flat
+    return head.rstrip("."), flat[len(head):].strip()
+
+
+def _steps(body: list[str], n_phase: int) -> list[dict]:
+    steps: list[dict] = []
+    step = None
+    for line in body:
+        m = _BOX.match(line)
+        if m and not m.group(1):
+            mark, rest = m.group(2).lower(), m.group(3).strip()
+            bold = re.match(r"\*\*(.+?)\*\*\s*(.*)", rest)
+            by = "user" if re.search(r"\((amos|user)\b", rest) else "agent"
+            state = {"x": "done", "~": "active", "!": "blocked", "-": "dropped"}.get(mark, "open")
+            step = {"id": f"s{n_phase}-{len(steps) + 1}", "by": by, "state": state,
+                    "title": bold.group(1).rstrip(".") if bold else "", "details": bold.group(2) if bold else rest,
+                    "plain": not bold}
+            if state in ("blocked", "dropped"):
+                step["reason"] = "as the Markdown plan this was converted from says"
+            steps.append(step)
+        elif step is not None and (line.startswith("  ") or not line.strip()):
+            step["details"] = (step["details"] + "\n" + line.strip()).strip()
+        elif line.strip():
+            step = None
+    for st in steps:
+        if st.pop("plain"):
+            st["title"], st["details"] = _split_title(st["details"])
+    return steps
+
+
+def _blocks(lines: list[str], marker: str) -> list[tuple[str, list[str]]]:
+    blocks: list[tuple[str, list[str]]] = [("", [])]
+    fence = False
+    for line in lines:
+        if line.lstrip().startswith("```"):
+            fence = not fence
+        if not fence and line.startswith(marker):
+            blocks.append((line[len(marker):].strip(), []))
+        else:
+            blocks[-1][1].append(line)
+    return blocks
+
+
 def from_markdown(text: str, name: str) -> Draft:
     lines = text.splitlines()
     title = name
@@ -131,43 +195,31 @@ def from_markdown(text: str, name: str) -> Draft:
         if line.startswith("# "):
             title, body_start = line[2:].strip(), i + 1
             break
-    blocks: list[tuple[str, list[str]]] = [("", [])]
-    for line in lines[body_start:]:
-        if line.startswith("## "):
-            blocks.append((line[3:].strip(), []))
-        else:
-            blocks[-1][1].append(line)
-    d = Draft(title=title, why="\n".join(blocks[0][1]).strip())
-    taken: set[str] = set()
-    n_phase = 0
-    for heading, body in blocks[1:]:
-        if any(_BOX.match(line) for line in body):
-            n_phase += 1
-            ph = {"id": f"p{n_phase}", "title": heading, "steps": []}
-            taken.add(ph["id"])
-            step = None
-            n = 0
-            for line in body:
-                m = _BOX.match(line)
-                if m and not m.group(1):
-                    n += 1
-                    mark, rest = m.group(2).lower(), m.group(3).strip()
-                    bold = re.match(r"\*\*(.+?)\*\*\s*(.*)", rest)
-                    st_title, details = (bold.group(1).rstrip("."), bold.group(2)) if bold else (rest, "")
-                    by = "user" if re.search(r"\((amos|user)\b", rest) else "agent"
-                    state = {"x": "done", "~": "active", "!": "blocked", "-": "dropped"}.get(mark, "open")
-                    step = {"id": f"s{n_phase}-{n}", "title": st_title, "by": by, "state": state,
-                            "details": details}
-                    if state in ("blocked", "dropped"):
-                        step["reason"] = "as the Markdown plan this was converted from says"
-                    ph["steps"].append(step)
-                elif step is not None and (line.startswith("  ") or not line.strip()):
-                    step["details"] = (step["details"] + "\n" + line.strip()).strip()
-                elif line.strip():
-                    step = None
-            d.phases.append(ph)
-        elif "\n".join(body).strip():
+    blocks = _blocks(lines[body_start:], "## ")
+    why = "\n".join(blocks[0][1]).strip()
+    d = Draft(title=title, why=why, summary=_summary(why))
+    has_box = lambda body: any(_BOX.match(line) for line in body)
+
+    def add_section(heading: str, body: list[str]) -> None:
+        if "\n".join(body).strip():
             d.sections.append((heading or "Notes", "\n".join(body).strip()))
+
+    for heading, body in blocks[1:]:
+        if not has_box(body):
+            add_section(heading, body)
+            continue
+        subs = _blocks(body, "### ")
+        if len(subs) == 1:
+            subs = [(heading, body)]
+        else:
+            add_section(heading, subs[0][1])
+            subs = [(sub, sb) for sub, sb in subs[1:]]
+        for sub, sb in subs:
+            if not has_box(sb):
+                add_section(f"{heading}: {sub}" if sub != heading else heading, sb)
+                continue
+            n_phase = len(d.phases) + 1
+            d.phases.append({"id": f"p{n_phase}", "title": sub, "steps": _steps(sb, n_phase)})
     return d
 
 
@@ -255,7 +307,8 @@ def _text(node) -> str:
     return " ".join(_md(node).split())
 
 
-def from_form(html: str, name: str, answers_raw: dict | None, source: str) -> Draft:
+def from_form(html: str, name: str, answers_raw: dict | None, source: str,
+              done_by: str = "") -> Draft:
     p = _Tree()
     p.feed(html)
     root = p.root
@@ -314,4 +367,22 @@ def from_form(html: str, name: str, answers_raw: dict | None, source: str) -> Dr
                 continue
             d.answers[dec["id"]] = {"selected": list(a.get("selected") or []), "text": a.get("text") or "",
                                     "at": saved_at or answers_mod.now(), "source": f"{source} (saved_at {saved_at})"}
+    if done_by:
+        _close(d, done_by, source)
     return d
+
+
+def _close(d: Draft, who: str, source: str) -> None:
+    """A form from done/ was acted on: its answered decisions are resolved and its steps done."""
+    for dec in d.decisions:
+        a = d.answers.get(dec["id"])
+        if not a:
+            continue
+        on = str(a["at"])[:10]
+        dec["resolved"] = a["selected"] or ["own"]
+        dec["resolved_on"] = on
+        dec["outcome"] = f"{who}, {on}: answered in the form {source}; the plan it belonged to is done."
+    for ph in d.phases:
+        for st in ph["steps"]:
+            if st["state"] == "open":
+                st["state"] = "done"

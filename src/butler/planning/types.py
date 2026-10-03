@@ -119,7 +119,7 @@ _DECISION_BODY = {
     "context": F(PROSE, "what the user needs to know to answer"),
     "as_of": F(DATE, "when the facts in `context` were checked"),
     "multiple": F(BOOL, "more than one option may be chosen", default=False),
-    "option": F(tables(OPTION), "two to four options", True),
+    "option": F(tables(OPTION), "two to four options (a resolved decision may keep more)", True),
     "recommend": F(STRS, "the recommended option id (a list if `multiple`)"),
     "because": F(STR, "why that option; required with `recommend`"),
     "own_answer": F(BOOL, "the user may write their own answer", default=True),

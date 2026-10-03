@@ -456,6 +456,81 @@ def test_convert_a_form_carries_its_answers(proj):
     assert "Why: the pages drift." in it.data["why"]
 
 
+MD_NESTED = """# Node setup
+
+**Status:** in progress since 2026-09-12.
+
+The server path needs a guided install.
+
+## Phases
+
+The order matters.
+
+### N0 — one data root
+
+- [x] Pin the UID and GID: `useradd --system`. Pick a
+  number that is free on every distribution.
+- [ ] Move config and state under one root.
+
+### N1 — ship the topology
+
+- [ ] **Split the compose file.** Into examples.
+
+## Notes
+
+```
+### not a heading
+```
+"""
+
+
+def test_convert_reads_subsections_as_phases_and_plain_bullets_as_titles(proj):
+    src = put(proj, "in-progress/node-setup.md", MD_NESTED)
+    assert run(proj, "convert", str(src)) == 0
+    data = tomllib.loads((proj / "planning" / "in-progress" / "node-setup.toml").read_text())
+    assert [p["title"] for p in data["phase"]] == ["N0 — one data root", "N1 — ship the topology"]
+    first = data["phase"][0]["step"][0]
+    assert first["title"] == "Pin the UID and GID: `useradd --system`" and first["state"] == "done"
+    assert "free on every distribution" in first["details"]
+    assert data["phase"][1]["step"][0]["title"] == "Split the compose file"
+    assert data["summary"] == "The server path needs a guided install."
+    assert [s["title"] for s in data["section"]] == ["Phases", "Notes"]
+    assert "### not a heading" in data["section"][1]["body"]
+
+
+def test_convert_keeps_a_subfolder_under_its_state_folder(proj):
+    src = put(proj, "done/followups/01-sweep.md", MD_PLAN)
+    assert run(proj, "convert", str(src)) == 0
+    assert (proj / "planning" / "done" / "followups" / "01-sweep.toml").is_file()
+
+
+def test_convert_closes_a_form_from_done(proj):
+    src = put(proj, "done/24-x.html", FORM)
+    put(proj, "done/24-x.answers.json", json.dumps({"saved_at": "2026-09-30T08:24:11Z", "answers": {
+        "repos": {"selected": ["generate"], "text": "", "labels": ["Generate it"]}}}))
+    assert run(proj, "convert", str(src)) == 0
+    it = next(i for i in folder.read(proj / "planning", proj).items if i.name == "24-x")
+    dec = it.decisions()[0]
+    assert dec["resolved"] == ["generate"] and str(dec["resolved_on"]) == "2026-09-30"
+    assert "24-x.answers.json" in dec["outcome"]
+    assert it.steps()[0]["state"] == "done"
+    rep = report(proj)
+    assert not [f for f in rep.findings if f.file.endswith("24-x.toml") and f.level == "error"], messages(rep)
+
+
+def test_only_a_resolved_decision_may_have_more_than_four_options(proj):
+    opts = "".join(f'\n  [[option]]\n  id = "o{i}"\n  label = "Option {i}"\n' for i in range(6))
+    base = ('kind = "decision"\nid = "d-5k2m7x"\ntitle = "t"\nsummary = "s"\ncreated = 2026-09-30\n'
+            'updated = 2026-09-30\nquestion = "Which one?"\n')
+    put(proj, "draft/many.toml", base + opts)
+    assert any("has 6 options" in m for m in messages(report(proj)))
+    resolved = base.replace('question = "Which one?"\n', 'question = "Which one?"\nresolved = ["o3"]\n'
+                            'outcome = "amos, 2026-09-30: o3."\nresolved_on = 2026-09-30\n')
+    (proj / "planning" / "draft" / "many.toml").unlink()
+    put(proj, "done/many.toml", resolved + opts)
+    assert not any("options" in m for m in messages(report(proj)))
+
+
 def test_the_users_ready_steps_wait_on_them(proj):
     done = plan_text().replace('because = "It runs already."', 'because = "x"\nresolved = ["ntfy"]\noutcome = "o"')
     for sid in ("s1-1", "s1-2"):

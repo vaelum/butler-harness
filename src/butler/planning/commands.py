@@ -512,6 +512,17 @@ def cmd_resolve(ctx: Ctx, args) -> int:
     return 0
 
 
+def _state_and_subdir(src: Path, root: Path) -> tuple[str, str]:
+    """The state folder a source sits in, and the subfolders below it: done/coverage/x.md → done, coverage."""
+    try:
+        parts = src.parent.relative_to(root).parts
+    except ValueError:
+        return "draft", ""
+    if parts and parts[0] in STATE_FOLDERS:
+        return parts[0], "/".join(parts[1:])
+    return "draft", ""
+
+
 def cmd_convert(ctx: Ctx, args) -> int:
     f = _folder(ctx)
     if not f.typed:
@@ -536,18 +547,20 @@ def cmd_convert(ctx: Ctx, args) -> int:
             except ValueError:
                 ui.warn("ignored", f"{ctx.disp(answers_file)} is not JSON")
         draft = convert_mod.from_form(src.read_text(encoding="utf-8"), name,
-                                      raw, answers_file.name if raw else "")
+                                      raw, answers_file.name if raw else "",
+                                      done_by=f.user if "done" in _state_and_subdir(src, f.root)[0] else "")
     else:
         raise ButlerError("convert reads a Markdown plan (.md) or a prototype form (.html)")
     slug = re.sub(r"[^a-z0-9-]+", "-", name.lower()).strip("-") or "converted"
-    folder = src.parent.name if src.parent.name in STATE_FOLDERS else "draft"
-    target = f.root / folder / f"{slug}.toml"
+    folder, subdir = _state_and_subdir(src, f.root)
+    target = f.root / folder / subdir / f"{slug}.toml"
     if target.exists():
         raise ButlerError(f"{ctx.disp(target)} exists")
     item_id = new_id("plan", {i.id for i in f.items} | set(f.answer_files))
     text = draft.render(item_id, _dt.date.today(), rel_src, _schema_ref(target, f.root))
     if ctx.would(f"write {ctx.disp(target)}" + (f" and answers/{item_id}.json" if draft.answers else "")):
         return 0
+    target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(text)
     if draft.answers:
         def change(d: dict) -> None:

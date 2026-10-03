@@ -9,6 +9,42 @@ here is what projects actually consume — keep these sections accurate before
 tagging. `butler.py --version` reports the version in use and the pin the
 project asked for.
 
+## [0.9.1]
+
+### Fixed
+
+- **`planning convert` keeps a file's subfolder.** A plan in
+  `done/coverage-followups/` came out in `draft/`, because only the folder right
+  above the file was checked for a state. The state folder is now found further
+  up, and the subfolders below it are kept.
+
+- **`planning convert` reads `###` subsections as phases.** A `## Phases`
+  section whose checkboxes sat under `### N0`, `### N1` and so on came out as
+  one phase holding every step. Each subsection with checkboxes is now a phase
+  of its own, named after it, and the rest of the section is kept as text. A
+  `###` inside a code fence is not a heading.
+
+- **A step from a plain bullet gets a sentence for a title.** Without bold text,
+  the title was the bullet's first line, cut wherever the Markdown wrapped. It is
+  now the first sentence, and the rest goes to `details`.
+
+- **The summary skips a status line.** A plan that opens with
+  `**Status:** todo, since …` had that as its summary. The summary is now the
+  first sentence after it.
+
+- **A form converted from `done/` comes out done.** Its answered decisions were
+  left open and its card steps unticked, so every converted record failed
+  `check` in `done/`. Each answered decision is now resolved from its answer,
+  with the date it was saved, and each step is done.
+
+### Changed
+
+- **A resolved decision may keep more than four options.** The limit keeps an
+  open question answerable; once it is answered, the question is only read. The
+  old HTML forms asked some questions with five to nine options, and converting
+  them would otherwise have meant dropping options their answers name. An open
+  decision still needs two to four.
+
 ## [0.9.0]
 
 ### Added
