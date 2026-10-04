@@ -9,6 +9,29 @@ here is what projects actually consume — keep these sections accurate before
 tagging. `butler.py --version` reports the version in use and the pin the
 project asked for.
 
+## [0.9.2]
+
+### Fixed
+
+- **`planning convert` keeps the prose around checkboxes.** A `##` section
+  with checkboxes became a phase of steps, and every line in it that was not a
+  checkbox or indented under one was dropped: the paragraphs between steps, a
+  table after them, a whole subsection's argument. Converting yeet's plans lost
+  between 50 and 435 lines a file that way. That text is now a section of the
+  same name beside the phase, with a `→ step sN-M` line where each step stood,
+  so it still reads in order.
+
+- **A step keeps its shape.** Its continuation lines were stripped one by one,
+  so a nested list lost its nesting, a blank line before a code block went, and
+  a checkbox without bold text was reflowed into one line, nested items and
+  all. The lines are now dedented together, and only the first paragraph is
+  reflowed to find the title. A bold title that the Markdown wrapped onto a
+  second line is read as the title too.
+
+- **A later `#` heading starts a section.** A `# Part II` divider after the
+  title ran on inside the section before it. It now ends that section, its own
+  text (if any) is a section, and the sections under it carry its name.
+
 ## [0.9.1]
 
 ### Fixed

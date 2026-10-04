@@ -498,6 +498,56 @@ def test_convert_reads_subsections_as_phases_and_plain_bullets_as_titles(proj):
     assert "### not a heading" in data["section"][1]["body"]
 
 
+MD_PROSE = """# Linux
+
+Why it matters.
+
+# Part I — the client
+
+What this part covers.
+
+## Phases
+
+The order matters, and this sentence must survive.
+
+- [x] **Ship the tarball, with a title the Markdown
+  wrapped.** Built in CI.
+- [ ] Bridge these out:
+  - `put`, with a nested item
+    that wraps
+  - `get`
+
+  ```sh
+  make tarball
+  ```
+
+Two alternatives were considered and are worse.
+
+## Updates
+
+No updater.
+"""
+
+
+def test_convert_keeps_the_prose_around_checkboxes_and_the_shape_of_a_step(proj):
+    src = put(proj, "done/linux.md", MD_PROSE)
+    assert run(proj, "convert", str(src)) == 0
+    data = tomllib.loads((proj / "planning" / "done" / "linux.toml").read_text())
+    titles = [x["title"] for x in data["section"]]
+    assert titles == ["Part I — the client", "Part I — the client: Phases", "Part I — the client: Updates"]
+    assert data["section"][0]["body"].strip() == "What this part covers."
+    phases_text = data["section"][1]["body"]
+    assert "this sentence must survive" in phases_text
+    assert "Two alternatives were considered and are worse." in phases_text
+    assert "→ step s1-1" in phases_text and "→ step s1-2" in phases_text
+    first, second = data["phase"][0]["step"]
+    assert first["title"] == "Ship the tarball, with a title the Markdown wrapped"
+    assert first["details"].strip() == "Built in CI."
+    assert second["title"] == "Bridge these out:"
+    assert "- `put`, with a nested item\n  that wraps\n- `get`" in second["details"]
+    assert "```sh\nmake tarball\n```" in second["details"]
+
+
 def test_convert_keeps_a_subfolder_under_its_state_folder(proj):
     src = put(proj, "done/followups/01-sweep.md", MD_PLAN)
     assert run(proj, "convert", str(src)) == 0
