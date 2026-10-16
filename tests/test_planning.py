@@ -235,8 +235,8 @@ def test_decision_rules(proj):
 def test_folder_rules(proj):
     put(proj, "todo/a.toml", plan_text())
     errs = " ".join(messages(report(proj)))
-    assert "has open decisions: alerts" in errs
     assert "has not been approved" in errs
+    assert "has open decisions" not in errs   # the approval is what todo/ asks for
     put(proj, "todo/a.toml", "")
     (proj / "planning/todo/a.toml").unlink()
     put(proj, "done/a.toml", plan_text())
@@ -383,6 +383,28 @@ def test_move_checks_the_target_folder(proj):
     assert run(proj, "move", "p-4k7x2m", "todo") == 0
     assert (proj / "planning" / "todo" / "a.toml").is_file()
     assert report(proj).errors == 0
+
+
+def approve_plan(root: Path, item: str):
+    f = folder.read(root / "planning", root)
+    it = f.get(item)
+    answers.update(f.answers_path(it.id), it.id, lambda d: d.__setitem__("plan_approval", {
+        "verdict": "approved", "at": "t", "sha256": types.plan_hash(it.data)}))
+
+
+def test_an_approved_plan_moves_to_todo_with_its_decisions_open(proj):
+    put(proj, "draft/a.toml", plan_text())
+    approve_plan(proj, "p-4k7x2m")
+    assert run(proj, "move", "p-4k7x2m", "todo") == 0
+    assert report(proj).errors == 0
+
+
+def test_without_plan_approval_open_decisions_keep_a_plan_out_of_todo(proj):
+    cfg = proj / "planning" / "planning.toml"
+    cfg.write_text(cfg.read_text().replace("plan_approval = true", "plan_approval = false"))
+    put(proj, "todo/a.toml", plan_text())
+    errs = " ".join(messages(report(proj)))
+    assert "has open decisions: alerts" in errs and "has not been approved" not in errs
 
 
 def test_summary_waits_on_the_user_for_a_draft_plan_approval(proj):

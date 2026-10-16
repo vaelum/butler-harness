@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from butler.planning import answers, client, folder, service
+from butler.planning import answers, check, client, folder, service
 from tests.test_planning import make_project, plan_text, put, run
 
 
@@ -95,6 +95,39 @@ def test_answer_tick_comment_and_approve(server, repo):
     assert run(repo, "gate", "p-4k7x2m", "s1-2") == 0
     # The item file itself was never written.
     assert (repo / "planning" / "draft" / "a.toml").read_text() == plan_text()
+
+
+def test_lane_order_and_dependencies(server, repo):
+    second = (plan_text().replace('id = "p-4k7x2m"', 'id = "p-7qq2m3"').replace('"Monitoring"', '"Dashboards"')
+              .replace('why = ', 'needs = ["p-4k7x2m"]\nwhy = ', 1))
+    put(repo, "draft/b.toml", second)
+    _, view, _ = req(server, "GET", "/api/r/demo")
+    assert [i["id"] for i in view["items"]] == ["p-4k7x2m", "p-7qq2m3"], "unplaced: by file name"
+    b = next(i for i in view["items"] if i["id"] == "p-7qq2m3")
+    assert b["needs"] == [{"ref": "p-4k7x2m", "id": "p-4k7x2m", "title": "Monitoring",
+                           "folder": "draft", "done": False}]
+    a = next(i for i in view["items"] if i["id"] == "p-4k7x2m")
+    assert a["needed_by"] == ["p-7qq2m3"] and a["rank"] is None
+
+    status, body, _ = req(server, "PUT", "/api/r/demo/order/draft", {"ids": ["p-7qq2m3", "p-4k7x2m"]})
+    assert status == 200 and body["changed"] == 2
+    _, view, _ = req(server, "GET", "/api/r/demo")
+    assert [i["id"] for i in view["items"]] == ["p-7qq2m3", "p-4k7x2m"]
+    assert answers.read(repo / "planning" / "answers" / "p-7qq2m3.json")["order"]["rank"] == 1
+    # The commands read the same order.
+    f = folder.read(repo / "planning", repo)
+    assert [it.id for it in f.items] == ["p-7qq2m3", "p-4k7x2m"]
+    # Unchanged places are not written again.
+    assert req(server, "PUT", "/api/r/demo/order/draft", {"ids": ["p-7qq2m3", "p-4k7x2m"]})[1]["changed"] == 0
+    # A lane that is not the folder as it is now, or not a lane at all.
+    assert req(server, "PUT", "/api/r/demo/order/draft", {"ids": ["p-7qq2m3"]})[0] == 409
+    assert req(server, "PUT", "/api/r/demo/order/todo", {"ids": ["p-7qq2m3", "p-4k7x2m"]})[0] == 409
+    assert req(server, "PUT", "/api/r/demo/order/notes", {"ids": []})[0] == 400
+    assert req(server, "PUT", "/api/r/demo/order/draft", {"ids": ["p-7qq2m3", "p-7qq2m3"]})[0] == 400
+    assert req(server, "PUT", "/api/r/demo/order/draft", {"ids": ["p-7qq2m3", "p-4k7x2m"]}, headers={})[0] == 403
+    # A rank only counts in the folder it was given in.
+    assert folder.rank({"order": {"folder": "draft", "rank": 1}}, "todo") is None
+    assert check.run(folder.read(repo / "planning", repo), git=False).errors == 0
 
 
 def test_a_resolved_decision_is_locked(server, repo):

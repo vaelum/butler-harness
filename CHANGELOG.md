@@ -9,6 +9,45 @@ here is what projects actually consume — keep these sections accurate before
 tagging. `butler.py --version` reports the version in use and the pin the
 project asked for.
 
+## [0.10.0]
+
+### Changed
+
+- **An approved plan may wait in `todo/` with decisions still open.** The
+  user's approval of the plan is the agreement `todo/` stands for, so
+  `planning move <id> todo` and `check` no longer ask for every decision to be
+  resolved first. `in-progress/` still wants each open decision held by a
+  step's `needs`, so no work starts past an unanswered question. A folder with
+  `plan_approval = false` keeps the old rule. Asked for by amos.
+
+### Added
+
+- **The repository's planning page shows its plans in lanes, in amos's
+  order.** Lanes are `draft/`, `todo/`, `in-progress/` and `done/`. Dragging a
+  card, or its handle with the arrow keys, sets the order inside a lane. The
+  order is saved as `order` in each item's answers file, and `planning list`
+  and `status` follow it too. A card moved to another folder starts at the end
+  of its new lane. Moving between lanes is still `planning move`, which checks
+  the folder's rules first. Each card lists the plans its `needs` names, each
+  marked done or not, and the plans that need it. It is badged *waits on N* or
+  *ready to start*, and warns when it sits above a plan it needs. Pointing at
+  a card highlights both sides. Asked for by amos.
+
+- **`[app.android] allow_backup = false`.** Sets `android:allowBackup="false"`
+  on the generated manifest's `<application>`, so Android's Auto Backup does
+  not copy the app's private files to the user's cloud backup. Tauri's
+  manifest leaves the attribute out, and Android's default is on. Written for
+  yeet, which keeps its identity passphrase in an app-private file on Android.
+
+- **`[build.docker.run_args]`: `docker run` arguments for one preset.** A table
+  of preset → arguments, added to every containerised run of that preset — the
+  build as well as the tests, because gtest's discovery executes the binaries
+  at build time. `[build.test_env] docker_args` could not do this: it applies
+  to every preset and only to runs with `--test`. Written for yeet's `tsan`
+  preset, whose binaries could not start on a CI runner because Docker's
+  default seccomp profile refuses the `personality` call ThreadSanitizer uses
+  to switch ASLR off.
+
 ## [0.9.2]
 
 ### Fixed

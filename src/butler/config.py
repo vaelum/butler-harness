@@ -116,6 +116,10 @@ class AndroidConfig:
     # Permit plain-HTTP to a self-hosted LAN backend via a network security
     # config (see components/android.py for why not usesCleartextTraffic).
     cleartext: bool = False
+    # false: android:allowBackup="false" in the generated manifest, so Auto
+    # Backup does not copy the app's private files — where an app keeps a
+    # secret when the device has no keystore-backed store for it.
+    allow_backup: bool = True
     # One APK per ABI instead of one universal APK carrying all of them.
     split_abi: bool = False
     ndk_version: str | None = None
@@ -320,6 +324,11 @@ class BuildenvConfig:
     # Presets that build in the container even without `--docker`, because the
     # image IS their toolchain and a host build of them was never meaningful.
     always: list[str] = field(default_factory=list)
+    # Extra `docker run` arguments per preset, for every containerised run of
+    # it — build and test alike. For what one preset's toolchain needs from the
+    # container and the others should not be given: ThreadSanitizer has to turn
+    # ASLR off for itself, which Docker's default seccomp profile refuses.
+    run_args: dict[str, list[str]] = field(default_factory=dict)
 
     def for_preset(self, preset: str, root: Path) -> "ResolvedBuildenv":
         dockerfile = root / self.dockerfile.format(preset=preset)
@@ -329,6 +338,7 @@ class BuildenvConfig:
                     else dockerfile.parent,
             tag=self.tag.format(preset=preset),
             workdir=self.workdir,
+            run_args=list(self.run_args.get(preset, [])),
         )
 
     def supports(self, preset: str) -> bool:
@@ -342,6 +352,7 @@ class ResolvedBuildenv:
     context: Path
     tag: str
     workdir: str
+    run_args: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -732,7 +743,8 @@ def _build(t: Table | None, root: Path, project_name: str) -> BuildConfig | None
                           "directory per preset is what keeps a debug build from "
                           "sharing a CMake cache with a release build")
     for key, names in (("presets", docker.presets if docker else []),
-                       ("always", docker.always if docker else [])):
+                       ("always", docker.always if docker else []),
+                       ("run_args", list(docker.run_args) if docker else [])):
         unknown = [p for p in names if p not in cfg.presets]
         if unknown:
             raise ConfigError(f"[build.docker] {key} names undeclared preset(s): "
@@ -741,6 +753,10 @@ def _build(t: Table | None, root: Path, project_name: str) -> BuildConfig | None
         outside = [p for p in docker.always if not docker.supports(p)]
         if outside:
             raise ConfigError(f"[build.docker] always lists {', '.join(outside)}, "
+                              f"which 'presets' excludes from container builds")
+        outside = [p for p in docker.run_args if not docker.supports(p)]
+        if outside:
+            raise ConfigError(f"[build.docker] run_args names {', '.join(outside)}, "
                               f"which 'presets' excludes from container builds")
     return cfg
 
@@ -771,6 +787,11 @@ def _build_options(items: list) -> list[BuildOption]:
 def _buildenv(t: Table | None, root: Path, project_name: str) -> BuildenvConfig | None:
     if t is None:
         return None
+    run_args = {str(k): v for k, v in t.open_table("run_args").items()}
+    for preset, value in run_args.items():
+        if not isinstance(value, list) or not all(isinstance(i, str) for i in value):
+            raise ConfigError(f"[build.docker.run_args] {preset} must be an array "
+                              f"of strings")
     cfg = BuildenvConfig(
         dockerfile=t.str_("dockerfile", required=True),
         # The build context defaults to the Dockerfile's directory, which is
@@ -781,6 +802,7 @@ def _buildenv(t: Table | None, root: Path, project_name: str) -> BuildenvConfig 
         workdir=t.str_("workdir", "/src"),
         presets=t.list_("presets", []),
         always=t.list_("always", []),
+        run_args=run_args,
     )
     t.done()
     return cfg
@@ -959,6 +981,7 @@ def _android(t: Table | None, project_name: str) -> AndroidConfig | None:
         dname=t.str_("dname", f"CN={key_name}, OU={key_name}, O={key_name}, C=DE"),
         vault=Path(t.str_("vault", "~/Documents/important")),
         cleartext=t.bool_("cleartext", False),
+        allow_backup=t.bool_("allow_backup", True),
         split_abi=t.bool_("split_abi", False),
         ndk_version=t.str_("ndk_version"),
         env_prefix=t.str_("env_prefix", project_name.upper()),

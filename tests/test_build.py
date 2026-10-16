@@ -506,3 +506,35 @@ def test_the_report_runs_even_when_a_stage_fails(tmp_path, capsys, monkeypatch):
     out = echoed(capsys)
     assert rc == 3, "the failure still fails the command"
     assert "check-report.py" in out, "a findings report is most useful when there are findings"
+
+
+def run_args_ctx(tmp_path: Path, run_args: str) -> Ctx:
+    yeet_ctx(tmp_path)   # the files on disk
+    toml = YEET_SHAPED.replace('always     = ["cachyos"]\n',
+                               'always     = ["cachyos"]\n\n'
+                               f'[build.docker.run_args]\n{run_args}\n')
+    return Ctx(cfg=parse(toml, tmp_path), dry_run=True, assume_yes=True)
+
+
+def test_a_preset_can_carry_its_own_docker_run_arguments(tmp_path, capsys):
+    # ThreadSanitizer has to switch ASLR off for itself, and Docker's default
+    # seccomp profile refuses the call. That is one preset's need, and it must
+    # reach the build-only run too: gtest's discovery executes the binaries.
+    ctx = run_args_ctx(tmp_path, 'cachyos = ["--security-opt", "seccomp=unconfined"]')
+    cmake_component.build(ctx, build_args(preset="cachyos"))
+    out = echoed(capsys)
+    assert "-w /demo --security-opt seccomp=unconfined" in out
+    cmake_component.build(ctx, build_args(preset="cachyos", test=True))
+    out = echoed(capsys)
+    # Before the test environment's own arguments, not instead of them.
+    assert ("-w /demo --security-opt seccomp=unconfined --network host "
+            "--device /dev/fuse") in out
+
+
+def test_run_arguments_must_name_a_preset_that_builds_in_a_container(tmp_path):
+    with pytest.raises(ConfigError, match="run_args names undeclared preset"):
+        run_args_ctx(tmp_path, 'tsan = ["--privileged"]')
+    with pytest.raises(ConfigError, match="run_args names release"):
+        run_args_ctx(tmp_path, 'release = ["--privileged"]')
+    with pytest.raises(ConfigError, match="must be an array of strings"):
+        run_args_ctx(tmp_path, 'cachyos = "--privileged"')

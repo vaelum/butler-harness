@@ -198,12 +198,16 @@
 
   // ---- one repository ------------------------------------------------------ //
 
+  const LANES = ['draft', 'todo', 'in-progress', 'done'];
+
   async function viewRepo(slug) {
     bar.hidden = true;
+    let byId = new Map();
+    let drag = null;  // a drag in progress: no redraw under it
     async function load() {
       let r;
       try { r = await api('GET', `/api/r/${slug}`); say(''); } catch (e) { say(e.message, true); return; }
-      if (typing()) return;
+      if (typing() || drag) return;
       document.title = r.name + ' · planning';
       setCrumbs([{ text: r.name }]);
       const out = [h('h1', {}, r.name), h('p', { class: 'lead mono small' }, r.path + (r.branch ? '  (' + r.branch + ')' : ''))];
@@ -223,12 +227,29 @@
           h('span', { class: 'muted small' }, w.for_user.map(x => x.what + (x.local ? ' ' + x.local : '')).join(' · '))));
         box.append(ul); out.push(box);
       }
-      for (const folder of ['draft', 'todo', 'in-progress', 'done', 'notes']) {
-        const items = (r.items || []).filter(i => i.folder === folder);
-        if (!items.length) continue;
-        out.push(h('h2', {}, folder + '/'));
+      const all = r.items || [];
+      byId = new Map(all.filter(i => i.id).map(i => [i.id, i]));
+      if (all.some(i => i.folder !== 'notes')) {
+        const lanes = h('div', { class: 'lanes' });
+        for (const folder of LANES) {
+          const items = all.filter(i => i.folder === folder);
+          const list = h('ol', { class: 'lane-list', 'data-folder': folder });
+          for (const it of items) list.append(itemCard(slug, it, true));
+          if (!items.length) list.append(h('li', { class: 'lane-empty muted small' }, 'empty'));
+          lanes.append(h('section', { class: 'lane', 'data-folder': folder },
+            h('h2', {}, folder + '/', ' ', h('span', { class: 'muted small' }, String(items.length))), list));
+          dropTarget(list);
+        }
+        out.push(lanes, h('p', { class: 'muted small lane-hint' },
+          'Drag a card, or use its ⠿ handle with the arrow keys, to set the order within a lane. ',
+          'Moving a card to another lane is ', h('code', {}, 'planning move'),
+          ', which checks the folder’s rules first.'));
+      }
+      const notes = all.filter(i => i.folder === 'notes');
+      if (notes.length) {
+        out.push(h('h2', {}, 'notes/'));
         const grid = h('div', { class: 'grid' });
-        for (const it of items) grid.append(itemCard(slug, it));
+        for (const it of notes) grid.append(itemCard(slug, it, false));
         out.push(grid);
       }
       const legacy = (r.legacy || []).concat(r.forms || []);
@@ -240,15 +261,116 @@
         d.append(ul);
         out.push(h('h2', {}, 'Other files'), d);
       }
+      // A redraw (after a move, or when a file changes) keeps the keyboard
+      // on the handle it was on.
+      const a = document.activeElement;
+      const keep = a && a.classList.contains('handle') ? a.closest('.item-card').dataset.id : null;
       main.replaceChildren(...out);
+      if (keep) { const hd = main.querySelector(`.item-card[data-id="${keep}"] .handle`); if (hd) hd.focus(); }
     }
-    function itemCard(slug, it) {
+
+    // ---- order: drag within a lane, or the handle and the arrow keys ---- //
+
+    function laneIds(list) {
+      return [...list.querySelectorAll(':scope > .item-card[data-id]')].map(c => c.dataset.id);
+    }
+    async function saveOrder(list, before) {
+      const ids = laneIds(list);
+      if (ids.join() === before.join()) return;
+      say('saving…');
+      try { await api('PUT', `/api/r/${slug}/order/${list.dataset.folder}`, { ids }); say('order saved ' + new Date().toLocaleTimeString()); }
+      catch (e) { say('not saved: ' + e.message, true); toast('Order not saved: ' + e.message); }
+      load();
+    }
+    function dropTarget(list) {
+      list.addEventListener('dragover', e => {
+        if (!drag) return;
+        if (list.dataset.folder !== drag.folder) { list.classList.add('no-drop'); return; }  // no preventDefault: no drop here
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        const after = [...list.querySelectorAll(':scope > .item-card[data-id]:not(.dragging)')]
+          .find(c => { const b = c.getBoundingClientRect(); return e.clientY < b.top + b.height / 2; });
+        if (after) { if (after.previousElementSibling !== drag.el) list.insertBefore(drag.el, after); }
+        else if (list.lastElementChild !== drag.el) list.append(drag.el);
+      });
+      list.addEventListener('dragleave', e => { if (!list.contains(e.relatedTarget)) list.classList.remove('no-drop'); });
+      list.addEventListener('drop', e => { if (drag && list.dataset.folder === drag.folder) { e.preventDefault(); drag.dropped = true; } });
+    }
+    function draggable(card, it) {
+      card.draggable = true;
+      card.addEventListener('dragstart', e => {
+        const list = card.parentElement;
+        drag = { el: card, folder: it.folder, list, before: laneIds(list), dropped: false };
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', it.id);
+        requestAnimationFrame(() => card.classList.add('dragging'));
+      });
+      card.addEventListener('dragend', () => {
+        const d = drag; drag = null;
+        card.classList.remove('dragging');
+        main.querySelectorAll('.no-drop').forEach(x => x.classList.remove('no-drop'));
+        if (d && d.dropped) saveOrder(d.list, d.before);
+        else load();  // cancelled: put the cards back where the files say
+      });
+    }
+    function handle(it) {
+      return h('button', { class: 'handle', type: 'button', title: 'Drag, or use the arrow keys to move it within the lane',
+                           'aria-label': `Move ${it.title}: arrow up or down`,
+                           onkeydown: e => {
+        if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+        e.preventDefault();
+        const card = e.currentTarget.closest('.item-card'), list = card.parentElement, before = laneIds(list);
+        const sib = e.key === 'ArrowUp' ? card.previousElementSibling : card.nextElementSibling;
+        if (!sib || !sib.dataset.id) return;
+        const hd = e.currentTarget;
+        if (e.key === 'ArrowUp') list.insertBefore(card, sib); else list.insertBefore(sib, card);
+        hd.focus();
+        saveOrder(list, before);
+      } }, '⠿');
+    }
+
+    // ---- dependencies: what a plan needs first, and what waits on it ---- //
+
+    function depChip(id, ref, done) {
+      const t = byId.get(id);
+      const label = t ? t.title : ref;
+      const where = t ? t.folder + '/' : 'not found';
+      return h('li', { class: 'dep' + (done ? ' done' : '') },
+        h('span', { class: 'dep-mark', 'aria-hidden': 'true' }, done ? '✓' : '○'), ' ',
+        t ? h('a', { href: `/r/${slug}/i/${id}`, draggable: 'false' }, mdi(label)) : h('code', {}, ref),
+        ref !== id && t ? h('span', { class: 'mono small muted' }, ' ' + ref.split('/')[1]) : null,
+        h('span', { class: 'muted small' }, ' · ' + where + (done && where !== 'done/' ? ' · done' : '')));
+    }
+    function deps(it) {
+      const needs = it.needs || [], by = it.needed_by || [];
+      if (!needs.length && !by.length) return null;
+      const box = h('div', { class: 'deps' });
+      if (needs.length) {
+        box.append(h('div', { class: 'deps-h' }, 'Needs first'),
+          h('ul', { class: 'dep-list' }, needs.map(n => depChip(n.id, n.ref, n.done))));
+      }
+      if (by.length) {
+        box.append(h('div', { class: 'deps-h' }, 'Needed by'),
+          h('ul', { class: 'dep-list' }, by.map(id => depChip(id, id, (byId.get(id) || {}).folder === 'done'))));
+      }
+      return box;
+    }
+    // Pointing at a card lights up what it needs and what needs it.
+    function relate(card, it, on) {
+      const mark = (id, cls) => { const c = main.querySelector(`.item-card[data-id="${id}"]`); if (c) c.classList.toggle(cls, on); };
+      card.classList.toggle('rel-self', on);
+      for (const n of it.needs || []) if (n.id) mark(n.id, 'rel-need');
+      for (const id of it.needed_by || []) mark(id, 'rel-dep');
+    }
+
+    function itemCard(slug, it, inLane) {
       if (it.broken) {
-        return h('div', { class: 'card item-card' }, h('div', {}, it.file), h('div', { class: 'meta' }, badge('cannot be read', 'warn'), ' see planning check'));
+        return h(inLane ? 'li' : 'div', { class: 'card item-card' }, h('div', {}, it.file), h('div', { class: 'meta' }, badge('cannot be read', 'warn'), ' see planning check'));
       }
       const pct = it.steps.total ? Math.round(100 * it.steps.done / it.steps.total) : 0;
-      const card = h('div', { class: 'card item-card' },
-        h('div', {}, badge(it.kind, 'muted'), ' ', h('a', { class: 'title', href: `/r/${slug}/i/${it.id}` }, mdi(it.title))),
+      const card = h(inLane ? 'li' : 'div', { class: 'card item-card', 'data-id': it.id },
+        h('div', { class: 'card-head' }, inLane ? handle(it) : null,
+          h('div', {}, badge(it.kind, 'muted'), ' ', h('a', { class: 'title', href: `/r/${slug}/i/${it.id}`, draggable: 'false' }, mdi(it.title)))),
         h('div', { class: 'meta mono' }, it.id));
       if (it.steps.total) {
         card.append(h('div', { class: 'progress' }, h('span', { style: null })),
@@ -258,7 +380,27 @@
       const b = h('div', { class: 'badges' });
       if (it.for_user.length) b.append(badge(`${it.for_user.length} for you`, 'open'));
       if (it.for_agent.length) b.append(badge(`${it.for_agent.length} for the agent`, 'agent'));
+      const open = (it.needs || []).filter(n => !n.done);
+      if (it.folder !== 'done' && open.length) b.append(badge(`waits on ${open.length}`, 'warn'));
+      else if ((it.folder === 'draft' || it.folder === 'todo') && (it.needs || []).length) b.append(badge('ready to start', 'ok'));
       if (b.childNodes.length) card.append(b);
+      // Placed above a plan it needs, in the same lane: the order says "this
+      // first", the needs say it cannot start yet.
+      if (inLane) {
+        const lane = [...byId.values()].filter(x => x.folder === it.folder).map(x => x.id);
+        const later = open.filter(n => n.id && lane.indexOf(n.id) > lane.indexOf(it.id));
+        if (later.length) card.append(h('div', { class: 'order-warn small' },
+          '↓ placed before ', ...later.map((n, i) => [i ? ', ' : '', mdi((byId.get(n.id) || {}).title || n.id)]), ', which it needs first'));
+      }
+      const dep = deps(it);
+      if (dep) card.append(dep);
+      if (inLane) {
+        draggable(card, it);
+        card.addEventListener('mouseenter', () => relate(card, it, true));
+        card.addEventListener('mouseleave', () => relate(card, it, false));
+        card.addEventListener('focusin', () => relate(card, it, true));
+        card.addEventListener('focusout', () => relate(card, it, false));
+      }
       return card;
     }
     await load();
@@ -677,6 +819,8 @@
 
   function route() {
     const p = location.pathname.split('/').filter(Boolean).map(decodeURIComponent);
+    // The lanes want the width; everything else reads better narrow.
+    document.body.classList.toggle('wide', p[0] === 'r' && p.length === 2);
     if (!p.length) return viewIndex();
     if (p[0] === 'r' && p.length === 2) return viewRepo(p[1]);
     if (p[0] === 'r' && p[2] === 'i' && p[3]) return viewItem(p[1], p[3]);

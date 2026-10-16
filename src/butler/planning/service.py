@@ -22,7 +22,8 @@ API (JSON):
     GET    /api/repos
     POST   /api/repos                             token: register {path, planning, name}
     DELETE /api/repos/<slug>                      token, or the header if the path is gone
-    GET    /api/r/<slug>                          the repository's items
+    GET    /api/r/<slug>                          the repository's items, in lane order,
+                                          with what each plan needs and is needed by
     GET    /api/r/<slug>/item/<id>                one item, its answers and its state
     GET    /api/r/<slug>/file/<path>              a file's text
     PUT    /api/r/<slug>/decision/<id>/<local>    {selected, text}
@@ -30,6 +31,8 @@ API (JSON):
     PUT    /api/r/<slug>/approval/<id>/<local>    {verdict, note}           (gated steps)
     PUT    /api/r/<slug>/approval/<id>            {verdict, note}           (the plan)
     POST   /api/r/<slug>/comment/<id>             {on, text}
+    PUT    /api/r/<slug>/order/<folder>           {ids}: the folder's items, in the
+                                          order the user dragged them to
 
 Who may do what:
 
@@ -68,8 +71,8 @@ from . import answers as answers_mod
 from . import check as check_mod
 from . import folder as folder_mod
 from .client import API, HEADER, SERVICE
-from .state import decision_local, plan_approval, step_approval, summarize
-from .types import ID_RE, jsonable, plan_hash, plan_snapshot, step_hash, step_snapshot
+from .state import decision_local, plan_approval, satisfied, step_approval, summarize
+from .types import ID_RE, STATE_FOLDERS, jsonable, plan_hash, plan_snapshot, step_hash, step_snapshot
 
 STATIC = Path(__file__).resolve().parent / "static"
 ASSETS = ("app.css", "app.js", "marked.min.js", "marked.LICENSE.md")
@@ -181,12 +184,28 @@ def repo_view(entry: dict, *, deep: bool = True) -> dict:
     out["user"] = f.user
     out["branch"] = _branch(Path(entry["path"]))
     items, waiting = [], []
+    ids = f.by_id()
+    needed_by: dict[str, list[str]] = {}
+    for it in f.items:
+        for ref in _needs(it):
+            needed_by.setdefault(ref.split("/", 1)[0], []).append(it.id)
     for it in f.items:
         if not it.parsed or not it.id:
             items.append({"id": it.id, "file": it.rel, "folder": it.folder, "title": it.title,
                           "kind": it.kind, "broken": True})
             continue
-        s = summarize(it, f.answers(it.id), plan_approval_required=f.plan_approval, ids=f.by_id()).as_json()
+        ans = f.answers(it.id)
+        s = summarize(it, ans, plan_approval_required=f.plan_approval, ids=ids).as_json()
+        s["rank"] = folder_mod.rank(ans, it.folder)
+        # What has to be done before this plan can start, and what waits on it.
+        s["needs"] = []
+        for ref in _needs(it):
+            target = ids.get(ref.split("/", 1)[0])
+            s["needs"].append({"ref": ref, "id": target.id if target else None,
+                               "title": target.title if target else None,
+                               "folder": target.folder if target else None,
+                               "done": satisfied(ref, it, ids)})
+        s["needed_by"] = list(dict.fromkeys(needed_by.get(it.id, [])))
         items.append(s)
         if s["for_user"]:
             waiting.append({"id": it.id, "title": it.title, "for_user": s["for_user"]})
@@ -199,6 +218,15 @@ def repo_view(entry: dict, *, deep: bool = True) -> dict:
         out["errors"] = rep.errors
         out["warnings"] = rep.warnings
     return out
+
+
+def _needs(it: folder_mod.Item) -> list[str]:
+    """An item's references to other items in its `needs`: whole plans, or
+    a step or phase in one (`p-4k7x2m/s2-1`)."""
+    if not it.parsed or not it.id:
+        return []
+    return [r for r in it.data.get("needs", []) or []
+            if isinstance(r, str) and ID_RE.match(r.split("/", 1)[0])]
 
 
 def item_view(entry: dict, item_id: str) -> dict | None:
@@ -532,8 +560,36 @@ class Handler(BaseHTTPRequestHandler):
             body = self._body()
             if body is None:
                 return None
+            if api[2] == "order" and method == "PUT" and len(api) == 4:
+                return self._order_write(entry, api[3], body)
             return self._item_write(entry, method, api[2], api[3], api[4] if len(api) > 4 else None, body)
         return self._error(404, "not found")
+
+    def _order_write(self, entry: dict, folder: str, body: dict) -> None:
+        """The user's order of one folder's items. The page sends the whole
+        lane, so an item added or moved away since it was drawn is a conflict
+        rather than a guess; each item whose place changed gets its rank in its
+        own answers file."""
+        if folder not in STATE_FOLDERS:
+            return self._error(400, f"only {', '.join(STATE_FOLDERS)} have an order")
+        ids = body.get("ids")
+        if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids) or len(set(ids)) != len(ids):
+            return self._error(400, "ids must be a list of item ids, each once")
+        f = _folder(entry)
+        here = [it.id for it in f.items if it.folder == folder and it.parsed and it.id]
+        if sorted(here) != sorted(ids):
+            return self._error(409, f"{folder}/ has changed since the page was drawn; reload it")
+        changed = 0
+        for n, iid in enumerate(ids, 1):
+            ans = f.answers(iid)
+            if folder_mod.rank(ans, folder) == n:
+                continue
+
+            def change(d: dict, n=n) -> None:
+                d["order"] = {"folder": folder, "rank": n, "at": answers_mod.now()}
+            answers_mod.update(f.answers_path(iid), iid, change)
+            changed += 1
+        return self._json(200, {"saved": True, "changed": changed})
 
     def _item_write(self, entry: dict, method: str, what: str, item_id: str, local: str | None,
                     body: dict) -> None:

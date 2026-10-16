@@ -319,3 +319,35 @@ def test_build_under_dry_run_does_not_copy_apks_it_never_made(monkeypatch, tmp_p
     assert not (tmp_path / "dist").exists()
     assert (outputs / "apk" / "universal" / "release" / "app-universal-release-unsigned.apk").exists()
 
+
+# --------------------------------------------------------------------------- #
+# Auto Backup
+# --------------------------------------------------------------------------- #
+
+def _manifest(tmp_path, body):
+    main = tmp_path / "app" / "src-tauri" / "gen" / "android" / "app" / "src" / "main"
+    main.mkdir(parents=True)
+    (main / "AndroidManifest.xml").write_text(body)
+    return main / "AndroidManifest.xml"
+
+
+def test_allow_backup_false_is_written_once_into_the_application_tag(tmp_path):
+    ctx = _ctx(tmp_path)
+    manifest = _manifest(tmp_path, '<manifest>\n    <application\n        android:label="x">\n')
+    android.sync_backup(ctx, ctx.cfg.app)
+    android.sync_backup(ctx, ctx.cfg.app)
+    text = manifest.read_text()
+    assert text.count('android:allowBackup="false"') == 1
+    assert text.index("<application") < text.index("allowBackup")
+
+
+def test_allow_backup_replaces_an_explicit_true(tmp_path):
+    ctx = _ctx(tmp_path)
+    manifest = _manifest(tmp_path, '<application android:allowBackup="true">')
+    android.sync_backup(ctx, ctx.cfg.app)
+    assert manifest.read_text() == '<application android:allowBackup="false">'
+
+
+def test_allow_backup_defaults_to_android_s_own_default(tmp_path):
+    assert _ctx(tmp_path).cfg.app.android.allow_backup is True
+

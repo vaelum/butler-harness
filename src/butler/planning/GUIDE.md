@@ -13,7 +13,7 @@ authoritative.
 planning/
   planning.toml   format = 1, user, plan_approval; its presence makes the folder typed
   draft/          items waiting on the user
-  todo/           agreed and ready
+  todo/           approved by the user; decisions may still be open
   in-progress/    being worked on
   done/           finished, kept as the record
   notes/          context several items share; notes have no state
@@ -127,6 +127,14 @@ steps. The user approves the plan as a whole before it leaves `draft/` (when
 A user step the user ticked in the page shows as "done in the page, not yet in
 the file" until you set its `state = "done"`.
 
+**The order is the user's.** The repository's page shows each folder as a
+lane, and the user drags the items into the order they want them done. The
+service keeps it in the items' answers files (`order`), and `planning list`,
+`status` and the page all show items in that order. Take work from `todo/`
+top-down. Moving an item to another folder starts it at the end of its new
+lane. A card also shows what its `needs` names and what needs it, so a plan's
+`needs` should list every plan that has to be done first.
+
 The top of every item's page is the user's to-do list, built from the files:
 the decisions to answer, the gates to approve, and the user's own steps whose
 `needs` are all finished. It is only as good as the `needs` you write: a user
@@ -149,7 +157,11 @@ forgot to set to `done` never shows. `planning status` prints the same list.
 - A disapproved step is dropped (`state = "dropped"`, `reason` = the user's
   note) or rewritten, which asks the user again.
 - `planning gate <id>` without a step checks the plan's own approval, which
-  `planning move <id> todo` also requires.
+  `planning move <id> todo` also requires. That approval is all todo/ asks
+  for: a plan may wait there with decisions still open. in-progress/ wants
+  every open decision held by the `needs` of a step, so no work starts past an
+  unanswered question. Without `plan_approval`, todo/ wants every decision
+  resolved instead.
 - **Never** write anything under `planning/answers/`, and never call the
   planning service's API yourself (`curl`, scripts). An approval you wrote is
   worthless, and it shows in the transcript and in git.

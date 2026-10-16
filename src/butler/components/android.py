@@ -433,6 +433,35 @@ def sync_network_config(ctx: Ctx, app: TauriConfig) -> None:
     ui.ok("applied", "Android network security config (cleartext HTTP permitted).")
 
 
+def sync_backup(ctx: Ctx, app: TauriConfig) -> None:
+    """Turn Android's Auto Backup off for this app (`allow_backup = false`).
+
+    Tauri's generated manifest does not mention allowBackup, so Android's
+    default — on — applies, and the app's private files (including a secret
+    kept there for want of a keystore-backed store) are copied to the user's
+    cloud backup. The attribute goes on <application>; an existing value is
+    replaced rather than duplicated.
+    """
+    manifest = gen_dir(app) / "app" / "src" / "main" / "AndroidManifest.xml"
+    if not manifest.is_file():
+        return
+    if ctx.would("set android:allowBackup=\"false\" in AndroidManifest.xml"):
+        return
+    text = manifest.read_text()
+    if 'android:allowBackup="false"' in text:
+        return
+    if 'android:allowBackup="true"' in text:
+        text = text.replace('android:allowBackup="true"', 'android:allowBackup="false"', 1)
+    elif "<application" in text:
+        text = text.replace("<application", '<application\n        android:allowBackup="false"', 1)
+    else:
+        ui.warn("warning:", "could not find <application> in AndroidManifest.xml; "
+                            "Auto Backup stays on.")
+        return
+    manifest.write_text(text)
+    ui.ok("applied", "Android Auto Backup off (allowBackup=false).")
+
+
 def ensure_initialised(ctx: Ctx, app: TauriConfig, tc: Toolchain) -> None:
     if not gen_dir(app).exists():
         ui.plain("Initializing the Android project (one-time)...")
@@ -445,6 +474,8 @@ def prepare_gen(ctx: Ctx, app: TauriConfig, cfg: AndroidConfig, tc: Toolchain) -
     sync_icons(ctx, app)
     if cfg.cleartext:
         sync_network_config(ctx, app)
+    if not cfg.allow_backup:
+        sync_backup(ctx, app)
 
 
 # --------------------------------------------------------------------------- #

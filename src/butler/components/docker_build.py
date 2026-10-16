@@ -51,6 +51,7 @@ def run_in(ctx: Ctx, cfg: ResolvedBuildenv, image: str, script: str, *,
         "--user", f"{os.getuid()}:{os.getgid()}",
         "-v", f"{ctx.root}:{cfg.workdir}",
         "-w", cfg.workdir,
+        *cfg.run_args,
         *(extra_args or []),
         image, "bash", "-c", script,
     ]

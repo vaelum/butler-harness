@@ -214,10 +214,15 @@ def folder_rules(item: Item, folder_name: str, ans: dict, *, plan_approval_requi
     open_decisions = [decision_local(item, d) for d in item.decisions() if not d.get("resolved")]
     if kind == "plan":
         if folder_name == "todo":
-            if open_decisions:
+            # The user's approval of the plan is the agreement todo/ stands for;
+            # its decisions may stay open until a step waits on them
+            # (in-progress/ checks that). Without approvals, resolved decisions
+            # are the only agreement there is.
+            if plan_approval_required:
+                if plan_approval(item, ans).status not in ("approved", "stale"):
+                    why.append("the plan has not been approved (planning.toml: plan_approval = true)")
+            elif open_decisions:
                 why.append(f"it has open decisions: {', '.join(open_decisions)}")
-            if plan_approval_required and plan_approval(item, ans).status not in ("approved", "stale"):
-                why.append("the plan has not been approved (planning.toml: plan_approval = true)")
         elif folder_name == "in-progress":
             waiting = set()
             for s in item.steps():

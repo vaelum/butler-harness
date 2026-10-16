@@ -77,6 +77,7 @@ one leaves the launcher valid.
 | `dname` | string | derived | X.500 name for `keygen` |
 | `vault` | string | `"~/Documents/important"` | keystore vault root; `$ANDROID_KEYSTORE_VAULT` overrides |
 | `cleartext` | bool | `false` | permit plain-HTTP to a self-hosted LAN backend |
+| `allow_backup` | bool | `true` | `false` sets `android:allowBackup="false"`, keeping the app's private files out of Auto Backup |
 | `split_abi` | bool | `false` | one APK per ABI instead of one universal APK |
 | `ndk_version` | string | — | preferred NDK, so a local build matches CI |
 | `env_prefix` | string | `NAME` upper-cased | prefix for the four signing env vars |
@@ -373,6 +374,7 @@ rather than silently reused.
 | `workdir` | string | `"/src"` | where the tree is mounted inside the container |
 | `presets` | array | all of them | presets that *can* build in a container |
 | `always` | array | `[]` | presets that build in the container without `--docker` |
+| `run_args` | table | `{}` | preset → extra `docker run` arguments for every containerised run of that preset, build and test (`tsan = ["--security-opt", "seccomp=unconfined"]`) |
 
 `--docker` builds this image (passing `USER_ID`/`GROUP_ID` so artifacts belong to
 whoever ran it) and runs the whole configure/build/test sequence inside it as one

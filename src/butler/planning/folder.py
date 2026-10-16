@@ -228,4 +228,25 @@ def read(root: Path, repo: Path | None = None) -> Folder:
                     f.stray.append(rel)
             continue
         f.stray.append(name + ("/" if entry.is_dir() else ""))
+    # The user's order inside a folder (dragged in the page), so `list`,
+    # `status` and the page all show the folder in the same order. Items the
+    # user has not placed follow, by file name.
+    f.items.sort(key=lambda it: (it.folder, *_rank(f, it)))
     return f
+
+
+def rank(ans: dict, folder: str) -> float | None:
+    """Where the user put the item in `folder`, or None. A rank given in
+    another folder no longer counts: a moved item starts at the end."""
+    o = ans.get("order")
+    if not isinstance(o, dict) or o.get("folder") != folder:
+        return None
+    r = o.get("rank")
+    return float(r) if isinstance(r, (int, float)) and not isinstance(r, bool) else None
+
+
+def _rank(f: Folder, it: Item) -> tuple[int, float]:
+    if not it.id or it.id not in f.answer_files:
+        return (1, 0.0)
+    r = rank(f.answers(it.id), it.folder)
+    return (1, 0.0) if r is None else (0, r)

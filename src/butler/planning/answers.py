@@ -16,8 +16,12 @@ too. Agents read it through `status` and `gate`, never by hand.
                                 "at": "…", "sha256": "…", "snapshot": {...}}},
       "plan_approval": {"verdict": …, "note": "", "at": "…", "sha256": "…", "snapshot": [...]},
       "comments":  [{"id": "c1", "on": "<local or ''>", "text": "…", "at": "…",
-                     "resolved"?: {"at": "…", "note": "…"}}]
+                     "resolved"?: {"at": "…", "note": "…"}}],
+      "order"?:    {"folder": "todo", "rank": 2, "at": "…"}
     }
+
+`order` is where the user dragged the item in its folder's lane. It counts
+only while the item is still in that folder.
 """
 
 from __future__ import annotations
