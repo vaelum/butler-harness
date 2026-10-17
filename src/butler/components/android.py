@@ -425,12 +425,39 @@ def sync_network_config(ctx: Ctx, app: TauriConfig) -> None:
                             "AndroidManifest.xml (the usesCleartextTraffic anchor moved); "
                             "cleartext may be blocked in release.")
         return
-    manifest.write_text(text.replace(
-        anchor,
-        'android:usesCleartextTraffic="${usesCleartextTraffic}"\n'
-        '        android:networkSecurityConfig="@xml/network_security_config">',
-        1))
+    manifest.write_text(text.replace(anchor, _NETWORK_CONFIG_WIRING, 1))
     ui.ok("applied", "Android network security config (cleartext HTTP permitted).")
+
+
+_NETWORK_CONFIG_WIRING = ('android:usesCleartextTraffic="${usesCleartextTraffic}"\n'
+                          '        android:networkSecurityConfig="@xml/network_security_config">')
+
+
+def remove_network_config(ctx: Ctx, app: TauriConfig) -> None:
+    """Undo sync_network_config when `cleartext` is off.
+
+    gen/android outlives the setting: a project built once with cleartext = true
+    keeps the config and the manifest attribute, so turning the flag off would
+    otherwise change nothing and release builds would still permit cleartext.
+    Only a file butler wrote (its "Managed by butler" header) and the attribute
+    in the exact form butler wired it are removed; a hand-written config is
+    the project's own and stays.
+    """
+    main = gen_dir(app) / "app" / "src" / "main"
+    config = main / "res" / "xml" / "network_security_config.xml"
+    manifest = main / "AndroidManifest.xml"
+    ours = config.is_file() and "Managed by butler" in config.read_text()
+    wired = manifest.is_file() and _NETWORK_CONFIG_WIRING in manifest.read_text()
+    if not (ours or wired):
+        return
+    if ctx.would("remove butler's network_security_config.xml and its manifest wiring"):
+        return
+    if wired:
+        manifest.write_text(manifest.read_text().replace(
+            _NETWORK_CONFIG_WIRING, 'android:usesCleartextTraffic="${usesCleartextTraffic}">', 1))
+    if ours:
+        config.unlink()
+    ui.ok("removed", "Android network security config (cleartext follows the build type again).")
 
 
 def sync_backup(ctx: Ctx, app: TauriConfig) -> None:
@@ -474,6 +501,8 @@ def prepare_gen(ctx: Ctx, app: TauriConfig, cfg: AndroidConfig, tc: Toolchain) -
     sync_icons(ctx, app)
     if cfg.cleartext:
         sync_network_config(ctx, app)
+    else:
+        remove_network_config(ctx, app)
     if not cfg.allow_backup:
         sync_backup(ctx, app)
 
@@ -735,6 +764,8 @@ def init(ctx: Ctx, args) -> int:
     sync_icons(ctx, app)
     if cfg.cleartext:
         sync_network_config(ctx, app)
+    else:
+        remove_network_config(ctx, app)
     return 0
 
 

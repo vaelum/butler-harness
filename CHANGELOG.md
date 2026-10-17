@@ -9,6 +9,53 @@ here is what projects actually consume — keep these sections accurate before
 tagging. `butler.py --version` reports the version in use and the pin the
 project asked for.
 
+## [Unreleased]
+
+## [0.11.0]
+
+### Added
+
+- **A card can be dragged to another lane on the repository's page.** The move
+  is `planning move`, checked against the same folder rules, so a plan that has
+  not been approved does not reach `todo/`, and one with open steps does not
+  reach `done/`. While a card is dragged, each lane shows whether it takes it
+  and, if not, why. A move from the page renames the file, with `git mv` when
+  git tracks it. With the ⠿ handle focused, the left and right arrow keys move
+  the card to the next lane.
+
+### Changed
+
+- **The repository's page no longer has a "Waiting on you" box.** The cards
+  already say what is for the user, and the index page still lists it all.
+
+### Fixed
+
+- **`cleartext = false` now turns cleartext off in a project that had it on.**
+  `cleartext = true` writes `res/xml/network_security_config.xml` into
+  `gen/android` and wires it into the manifest, and `gen/android` is kept
+  between builds. Setting the flag back to false skipped that step and undid
+  nothing, so release builds still permitted plain HTTP. Now butler removes the
+  config and the manifest attribute, but only a config carrying its own
+  "Managed by butler" header and the attribute in the form it wrote, so a
+  hand-written config stays. Found in yeet's p-6pazb9 s6-5, whose APK built
+  with the flag off still allowed cleartext.
+
+## [0.10.1]
+
+### Fixed
+
+- **Six open planning tabs no longer lock up the page.** Each tab held its own
+  live-update stream, and a browser opens at most six connections to one host,
+  so with six tabs open every other request, an Approve click or a page load,
+  waited in the browser and never reached the service. The tabs now share one
+  stream through a SharedWorker (`events.js`), over the new
+  `/api/events?scope=all`, whose `change` names the repositories that changed;
+  a page reloads only for its own. A browser without SharedWorker falls back to
+  a stream per tab. Found by amos approving a step in lifestack's p-033gh1.
+
+- **A decision's own page draws again.** Its `context` is prose, and the item
+  header read it as a list of references and threw before anything was shown.
+
 ## [0.10.0]
 
 ### Changed

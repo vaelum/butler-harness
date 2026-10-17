@@ -351,3 +351,46 @@ def test_allow_backup_replaces_an_explicit_true(tmp_path):
 def test_allow_backup_defaults_to_android_s_own_default(tmp_path):
     assert _ctx(tmp_path).cfg.app.android.allow_backup is True
 
+
+# --------------------------------------------------------------------------- #
+# Cleartext
+# --------------------------------------------------------------------------- #
+
+_TEMPLATE_APPLICATION = ('<application\n'
+                         '        android:usesCleartextTraffic="${usesCleartextTraffic}">\n')
+
+
+def test_cleartext_off_removes_what_cleartext_on_wrote(tmp_path):
+    ctx = _ctx(tmp_path)
+    manifest = _manifest(tmp_path, _TEMPLATE_APPLICATION)
+    config = manifest.parent / "res" / "xml" / "network_security_config.xml"
+    android.sync_network_config(ctx, ctx.cfg.app)
+    assert config.is_file()
+    assert "networkSecurityConfig" in manifest.read_text()
+    android.remove_network_config(ctx, ctx.cfg.app)
+    android.remove_network_config(ctx, ctx.cfg.app)
+    assert not config.exists()
+    assert manifest.read_text() == _TEMPLATE_APPLICATION
+
+
+def test_cleartext_off_keeps_a_hand_written_config(tmp_path):
+    ctx = _ctx(tmp_path)
+    manifest = _manifest(tmp_path, _TEMPLATE_APPLICATION)
+    config = manifest.parent / "res" / "xml" / "network_security_config.xml"
+    config.parent.mkdir(parents=True)
+    config.write_text("<network-security-config/>")
+    android.remove_network_config(ctx, ctx.cfg.app)
+    assert config.read_text() == "<network-security-config/>"
+    assert manifest.read_text() == _TEMPLATE_APPLICATION
+
+
+def test_cleartext_off_changes_nothing_on_a_dry_run(tmp_path):
+    ctx = _ctx(tmp_path)
+    manifest = _manifest(tmp_path, _TEMPLATE_APPLICATION)
+    android.sync_network_config(ctx, ctx.cfg.app)
+    wired = manifest.read_text()
+    ctx.dry_run = True
+    android.remove_network_config(ctx, ctx.cfg.app)
+    assert manifest.read_text() == wired
+    assert (manifest.parent / "res" / "xml" / "network_security_config.xml").exists()
+

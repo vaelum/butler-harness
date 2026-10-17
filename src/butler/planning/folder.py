@@ -8,6 +8,7 @@ can still show the rest of a folder while one file is half-written.
 from __future__ import annotations
 
 import re
+import subprocess
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -160,6 +161,32 @@ class Folder:
 
     def answers(self, item_id: str) -> dict:
         return answers_mod.read(self.answers_path(item_id), item_id)
+
+    def move_target(self, it: Item, folder: str) -> Path:
+        """Where `it` lands in `folder`: the same name, under the other folder."""
+        return self.root / folder / it.rel.split("/", 1)[1]
+
+    def move(self, it: Item, folder: str) -> Path:
+        """Move `it`'s file to `folder`, with `git mv` when git tracks it.
+        Says nothing about whether it may: that is check.folder_rules."""
+        target = self.move_target(it, folder)
+        if target.exists():
+            raise FileExistsError(str(target))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if _tracked(self.repo, it.path):
+            subprocess.run(["git", "-C", str(self.repo), "mv", str(it.path), str(target)],
+                           check=True, capture_output=True, timeout=30)
+        else:
+            it.path.rename(target)
+        return target
+
+
+def _tracked(repo: Path, path: Path) -> bool:
+    try:
+        return subprocess.run(["git", "-C", str(repo), "ls-files", "--error-unmatch", str(path)],
+                              capture_output=True, timeout=5).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
 
 
 def _parse_item(path: Path, root: Path, folder: str) -> Item:

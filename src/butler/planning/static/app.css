@@ -154,6 +154,8 @@ body.wide main { max-width: 1440px; }
 .lane h2 { margin: 0 0 .3em; padding: 0 2px .3em; font-size: 1rem; }
 .lane-list { list-style: none; margin: 0; padding: 0 0 6px; min-height: 3em; border-radius: 8px; }
 .lane-list.no-drop { outline: 2px dashed var(--bad); outline-offset: 2px; cursor: no-drop; }
+.lane-list.can-drop { outline: 2px dashed var(--accent); outline-offset: 2px; }
+.lane-why { color: var(--bad); padding: 0 2px .4em; }
 .lane-list > .item-card { margin: 8px 0; }
 .lane-empty { padding: .8em 4px; text-align: center; }
 .lane-hint { margin-top: .6em; }

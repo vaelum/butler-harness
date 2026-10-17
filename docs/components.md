@@ -100,7 +100,7 @@ one leaves the launcher valid.
    seeds the res tree once and never re-reads it, so without this the APK ships
    the wrong icon;
 4. write `network_security_config.xml` and wire it into the manifest, when
-   `cleartext = true`;
+   `cleartext = true`, and remove both again when it is false;
 5. **delete `app/build/outputs`** — Gradle leaves an APK behind for every
    variant ever built and the signing step globs the whole tree, so a stale
    universal APK would be re-signed with today's label and shipped as if it were
@@ -127,6 +127,12 @@ from `/proc` for as long as apksigner runs.
 `usesCleartextTraffic`. On API 24+ the config takes precedence **and** keeps the
 system trust anchors, so ordinary HTTPS is unaffected. Add `<domain>` entries to
 the generated file's template if you'd rather not allow cleartext globally.
+
+Turning it back off removes what butler wrote: the config, if it still carries
+butler's "Managed by butler" header, and the `android:networkSecurityConfig`
+attribute in the form butler added it. Cleartext then follows Tauri's
+per-build-type `usesCleartextTraffic` placeholder (on for debug, off for
+release). A config you wrote yourself is left alone.
 
 ### Sideloading
 

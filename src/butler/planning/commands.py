@@ -79,14 +79,6 @@ def _git_user(root: Path) -> str:
         return ""
 
 
-def _tracked(repo: Path, path: Path) -> bool:
-    try:
-        return subprocess.run(["git", "-C", str(repo), "ls-files", "--error-unmatch", str(path)],
-                              capture_output=True, timeout=5).returncode == 0
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-
-
 # --------------------------------------------------------------------------- #
 # init, new, schema, guide
 # --------------------------------------------------------------------------- #
@@ -452,17 +444,12 @@ def cmd_move(ctx: Ctx, args) -> int:
     if why:
         raise ButlerError(f"{it.id} cannot move to {args.folder}/: " + "; ".join(why),
                           hint="python butler.py planning status " + it.id)
-    inner = it.rel.split("/", 1)[1]
-    target = f.root / args.folder / inner
+    target = f.move_target(it, args.folder)
     if target.exists():
         raise ButlerError(f"{ctx.disp(target)} exists")
     if ctx.would(f"move {ctx.disp(it.path)} to {ctx.disp(target)}"):
         return 0
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if _tracked(ctx.root, it.path):
-        ctx.check(["git", "mv", str(it.path), str(target)])
-    else:
-        it.path.rename(target)
+    f.move(it, args.folder)
     ui.ok(f"{it.id} → {args.folder}/", ctx.disp(target))
     return 0
 

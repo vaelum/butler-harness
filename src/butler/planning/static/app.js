@@ -97,22 +97,70 @@
   // Reload the moment a file behind this page changes: the service watches them
   // and says so over Server-Sent Events. The timer in poll() stays as a slow
   // fallback, for a stream that is down or a proxy that buffers it.
-  function watch(fn, scope, slug) {
+  //
+  // Every tab shares one stream through a SharedWorker (events.js): a browser
+  // opens six connections per host, and a stream per tab left the sixth tab
+  // none for its own requests. Where there is no SharedWorker, a tab opens its
+  // own stream for just its page.
+  let watcher = null;  // { fn, scope, slug }: what this page reloads, on which changes
+  let shared = null;   // this tab's port to the shared worker
+
+  function heard(msg) {
+    if (msg.type === 'hello') {
+      // The service was upgraded under this page: load the new script too.
+      if (msg.version && VERSION && msg.version !== VERSION) location.reload();
+    } else if (msg.type === 'change') {
+      if (!watcher) return;
+      if (watcher.scope === 'repo' ? (msg.slugs || []).includes(watcher.slug) : msg.index) watcher.fn();
+    } else if (msg.type === 'error') {
+      say('live updates paused; retrying', true);
+    } else if (msg.type === 'open') {
+      say('');
+    }
+  }
+
+  function ownStream() {
     if (stream) stream.close();
-    if (!window.EventSource) return;
-    const q = new URLSearchParams({ scope });
-    if (slug) q.set('slug', slug);
+    stream = null;
+    if (!window.EventSource || !watcher) return;
+    const q = new URLSearchParams({ scope: watcher.scope });
+    if (watcher.slug) q.set('slug', watcher.slug);
     stream = new EventSource('/api/events?' + q);
     stream.addEventListener('hello', e => {
       let v = '';
       try { v = JSON.parse(e.data).version; } catch (err) { v = ''; }
-      // The service was upgraded under this page: load the new script too.
-      if (v && VERSION && v !== VERSION) location.reload();
+      heard({ type: 'hello', version: v });
     });
-    stream.addEventListener('change', () => fn());
-    stream.onerror = () => say('live updates paused; retrying', true);
-    stream.onopen = () => say('');
+    stream.addEventListener('change', () => watcher && watcher.fn());
+    stream.onerror = () => heard({ type: 'error' });
+    stream.onopen = () => heard({ type: 'open' });
   }
+
+  function watch(fn, scope, slug) {
+    watcher = { fn, scope, slug };
+    if (shared) return;
+    if (!window.SharedWorker || !VERSION) return ownStream();
+    try {
+      const w = new SharedWorker(`/static/${VERSION}/events.js`, { name: 'planning-events' });
+      w.onerror = () => { shared = null; ownStream(); };
+      shared = w.port;
+      shared.onmessage = (e) => heard(e.data || {});
+      shared.start();
+    } catch (e) {
+      shared = null;
+      ownStream();
+    }
+  }
+
+  // Leaving the page (or going into the back-forward cache) gives this tab's
+  // share back, so the worker can drop the stream once no tab wants it.
+  window.addEventListener('pagehide', () => {
+    if (shared) { try { shared.postMessage('bye'); } catch (e) { /* gone already */ } shared = null; }
+    if (stream) { stream.close(); stream = null; }
+  });
+  window.addEventListener('pageshow', (e) => {
+    if (e.persisted && watcher) watch(watcher.fn, watcher.scope, watcher.slug);
+  });
 
   function typing() {
     const a = document.activeElement;
@@ -220,13 +268,6 @@
           `planning check: ${r.errors} error${r.errors === 1 ? '' : 's'}, ${r.warnings} warning${r.warnings === 1 ? '' : 's'}. `,
           h('code', {}, 'python butler.py planning check'), ' says which.'));
       }
-      if ((r.waiting || []).length) {
-        const box = h('div', { class: 'waiting' }, h('strong', {}, 'Waiting on you'));
-        const ul = h('ul');
-        for (const w of r.waiting) ul.append(h('li', {}, h('a', { href: `/r/${slug}/i/${w.id}` }, w.title), ' ',
-          h('span', { class: 'muted small' }, w.for_user.map(x => x.what + (x.local ? ' ' + x.local : '')).join(' · '))));
-        box.append(ul); out.push(box);
-      }
       const all = r.items || [];
       byId = new Map(all.filter(i => i.id).map(i => [i.id, i]));
       if (all.some(i => i.folder !== 'notes')) {
@@ -237,13 +278,13 @@
           for (const it of items) list.append(itemCard(slug, it, true));
           if (!items.length) list.append(h('li', { class: 'lane-empty muted small' }, 'empty'));
           lanes.append(h('section', { class: 'lane', 'data-folder': folder },
-            h('h2', {}, folder + '/', ' ', h('span', { class: 'muted small' }, String(items.length))), list));
+            h('h2', {}, folder + '/', ' ', h('span', { class: 'muted small' }, String(items.length))),
+            h('div', { class: 'lane-why small', hidden: true }), list));
           dropTarget(list);
         }
         out.push(lanes, h('p', { class: 'muted small lane-hint' },
-          'Drag a card, or use its ⠿ handle with the arrow keys, to set the order within a lane. ',
-          'Moving a card to another lane is ', h('code', {}, 'planning move'),
-          ', which checks the folder’s rules first.'));
+          'Drag a card, or use its ⠿ handle with the arrow keys, to order a lane or move it to another. ',
+          'A move is ', h('code', {}, 'planning move'), ': a lane whose rules the item does not meet says why and takes no drop.'));
       }
       const notes = all.filter(i => i.folder === 'notes');
       if (notes.length) {
@@ -282,10 +323,36 @@
       catch (e) { say('not saved: ' + e.message, true); toast('Order not saved: ' + e.message); }
       load();
     }
+    // Why `it` may not go to `folder` (empty: it may). The service says, per
+    // lane, from the same rules `planning move` checks.
+    function refusal(it, folder) {
+      if (folder === it.folder) return [];
+      return (it.moves || {})[folder] || ['an item in ' + it.folder + '/ does not move between lanes'];
+    }
+    async function moveTo(it, list) {
+      const folder = list.dataset.folder;
+      say('moving…');
+      try {
+        await api('PUT', `/api/r/${slug}/move/${it.id}`, { folder, ids: laneIds(list) });
+        say(`${it.id} moved to ${folder}/ ` + new Date().toLocaleTimeString());
+      } catch (e) { say('not moved: ' + e.message, true); toast('Not moved: ' + e.message); }
+      load();
+    }
+    // While a card is dragged, each other lane shows whether it takes it.
+    function showLanes(it, on) {
+      for (const lane of main.querySelectorAll('.lane[data-folder]')) {
+        const why = on ? refusal(it, lane.dataset.folder) : [];
+        const list = lane.querySelector('.lane-list'), note = lane.querySelector('.lane-why');
+        list.classList.toggle('no-drop', why.length > 0);
+        list.classList.toggle('can-drop', on && !why.length && lane.dataset.folder !== it.folder);
+        note.hidden = !why.length;
+        note.textContent = why.length ? 'Cannot move here: ' + why.join('; ') : '';
+      }
+    }
     function dropTarget(list) {
       list.addEventListener('dragover', e => {
         if (!drag) return;
-        if (list.dataset.folder !== drag.folder) { list.classList.add('no-drop'); return; }  // no preventDefault: no drop here
+        if (refusal(drag.it, list.dataset.folder).length) return;  // no preventDefault: no drop here
         e.preventDefault();
         e.dataTransfer.dropEffect = 'move';
         const after = [...list.querySelectorAll(':scope > .item-card[data-id]:not(.dragging)')]
@@ -293,30 +360,43 @@
         if (after) { if (after.previousElementSibling !== drag.el) list.insertBefore(drag.el, after); }
         else if (list.lastElementChild !== drag.el) list.append(drag.el);
       });
-      list.addEventListener('dragleave', e => { if (!list.contains(e.relatedTarget)) list.classList.remove('no-drop'); });
-      list.addEventListener('drop', e => { if (drag && list.dataset.folder === drag.folder) { e.preventDefault(); drag.dropped = true; } });
+      list.addEventListener('drop', e => { if (drag && !refusal(drag.it, list.dataset.folder).length) { e.preventDefault(); drag.dropped = true; } });
     }
     function draggable(card, it) {
       card.draggable = true;
       card.addEventListener('dragstart', e => {
         const list = card.parentElement;
-        drag = { el: card, folder: it.folder, list, before: laneIds(list), dropped: false };
+        drag = { el: card, it, list, before: laneIds(list), dropped: false };
         e.dataTransfer.effectAllowed = 'move';
         e.dataTransfer.setData('text/plain', it.id);
-        requestAnimationFrame(() => card.classList.add('dragging'));
+        requestAnimationFrame(() => { card.classList.add('dragging'); showLanes(it, true); });
       });
       card.addEventListener('dragend', () => {
         const d = drag; drag = null;
         card.classList.remove('dragging');
-        main.querySelectorAll('.no-drop').forEach(x => x.classList.remove('no-drop'));
-        if (d && d.dropped) saveOrder(d.list, d.before);
+        showLanes(it, false);
+        const into = card.parentElement;
+        if (d && d.dropped && into !== d.list) moveTo(it, into);
+        else if (d && d.dropped) saveOrder(d.list, d.before);
         else load();  // cancelled: put the cards back where the files say
       });
     }
     function handle(it) {
-      return h('button', { class: 'handle', type: 'button', title: 'Drag, or use the arrow keys to move it within the lane',
-                           'aria-label': `Move ${it.title}: arrow up or down`,
+      return h('button', { class: 'handle', type: 'button', title: 'Drag, or use the arrow keys: up and down within the lane, left and right to the next lane',
+                           'aria-label': `Move ${it.title}: arrow up or down within the lane, left or right to another`,
                            onkeydown: e => {
+        if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+          e.preventDefault();
+          const to = LANES[LANES.indexOf(it.folder) + (e.key === 'ArrowLeft' ? -1 : 1)];
+          if (!to) return;
+          const why = refusal(it, to);
+          if (why.length) { toast(`Cannot move to ${to}/: ` + why.join('; ')); return; }
+          const list = main.querySelector(`.lane-list[data-folder="${to}"]`), card = e.currentTarget.closest('.item-card');
+          list.append(card);
+          e.currentTarget.focus();
+          moveTo(it, list);
+          return;
+        }
         if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
         e.preventDefault();
         const card = e.currentTarget.closest('.item-card'), list = card.parentElement, before = laneIds(list);
@@ -489,7 +569,8 @@
 
       const kv = [];
       for (const key of ['needs', 'context', 'related']) {
-        if ((d[key] || []).length) kv.push(h('div', { class: 'kv' }, key + ': ', ...d[key].map((x, i) => [i ? ', ' : '', h('code', {}, x)])));
+        // A decision's `context` is prose, shown on its card; only lists are references.
+        if (Array.isArray(d[key]) && d[key].length) kv.push(h('div', { class: 'kv' }, key + ': ', ...d[key].map((x, i) => [i ? ', ' : '', h('code', {}, x)])));
       }
       if ((d.touches || []).length) kv.push(h('div', { class: 'kv' }, 'touches: ', ...d.touches.map((x, i) => [i ? ', ' : '', h('code', {}, x)])));
       if (d.created) kv.push(h('div', { class: 'kv' }, `created ${d.created} · updated ${d.updated}`));

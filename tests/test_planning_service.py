@@ -130,6 +130,32 @@ def test_lane_order_and_dependencies(server, repo):
     assert check.run(folder.read(repo / "planning", repo), git=False).errors == 0
 
 
+def test_moving_between_lanes_checks_the_folder_rules(server, repo):
+    _, view, _ = req(server, "GET", "/api/r/demo")
+    a = view["items"][0]
+    assert set(a["moves"]) == {"todo", "in-progress", "done"}
+    assert "not been approved" in a["moves"]["todo"][0] and a["moves"]["done"]
+    # Refused: the same reasons `planning move` gives, and nothing moves.
+    status, body, _ = req(server, "PUT", "/api/r/demo/move/p-4k7x2m", {"folder": "todo"})
+    assert status == 409 and "not been approved" in body["error"]
+    assert (repo / "planning" / "draft" / "a.toml").exists()
+    assert req(server, "PUT", "/api/r/demo/move/p-4k7x2m", {"folder": "notes"})[0] == 400
+    assert req(server, "PUT", "/api/r/demo/move/p-0000000", {"folder": "todo"})[0] == 404
+    assert req(server, "PUT", "/api/r/demo/move/p-4k7x2m", {"folder": "todo"}, headers={})[0] == 403
+    # Approved, it moves, and the lane keeps the order it was dropped in.
+    assert req(server, "PUT", "/api/r/demo/approval/p-4k7x2m", {"verdict": "approved"})[0] == 200
+    _, view, _ = req(server, "GET", "/api/r/demo")
+    assert view["items"][0]["moves"]["todo"] == []
+    assert req(server, "PUT", "/api/r/demo/move/p-4k7x2m", {"folder": "todo", "ids": ["p-7qq2m3"]})[0] == 409
+    status, body, _ = req(server, "PUT", "/api/r/demo/move/p-4k7x2m", {"folder": "todo", "ids": ["p-4k7x2m"]})
+    assert status == 200 and body == {"moved": True, "folder": "todo", "file": "todo/a.toml"}
+    assert (repo / "planning" / "todo" / "a.toml").exists() and not (repo / "planning" / "draft" / "a.toml").exists()
+    assert answers.read(repo / "planning" / "answers" / "p-4k7x2m.json")["order"]["folder"] == "todo"
+    _, view, _ = req(server, "GET", "/api/r/demo")
+    assert view["items"][0]["folder"] == "todo" and "todo" not in view["items"][0]["moves"]
+    assert check.run(folder.read(repo / "planning", repo), git=False).errors == 0
+
+
 def test_a_resolved_decision_is_locked(server, repo):
     put(repo, "draft/a.toml", plan_text().replace('because = "It runs already."',
                                                   'because = "x"\nresolved = ["ntfy"]\noutcome = "o"'))
@@ -254,3 +280,38 @@ def test_events_say_change_when_a_file_changes(server, repo):
     put(repo, "draft/a.toml", plan_text().replace('title = "Monitoring"', 'title = "Monitoring, renamed"'))
     assert next_event() == "change"
     conn.close()
+
+
+def test_one_stream_for_every_tab_names_the_repository_that_changed(server, repo):
+    """scope=all is the stream the SharedWorker holds for every tab: its change
+    says which repository changed, so a page of another one stays put."""
+    import http.client
+
+    conn = http.client.HTTPConnection("127.0.0.1", server, timeout=5)
+    conn.request("GET", "/api/events?scope=all", headers={"Host": f"127.0.0.1:{server}"})
+    resp = conn.getresponse()
+    assert resp.status == 200
+
+    def next_event():
+        name = data = None
+        while True:
+            line = resp.fp.readline().decode()
+            if line.startswith("event: "):
+                name = line[7:].strip()
+            elif line.startswith("data: "):
+                data = json.loads(line[6:])
+            elif line == "\n" and name:
+                return name, data
+
+    assert next_event()[0] == "hello"
+    time.sleep(0.2)
+    put(repo, "draft/a.toml", plan_text().replace('title = "Monitoring"', 'title = "Monitoring, renamed"'))
+    assert next_event() == ("change", {"index": True, "slugs": ["demo"]})
+    conn.close()
+
+
+def test_the_shared_worker_is_served_with_the_page_version(server):
+    status, health, _ = req(server, "GET", "/api/health")
+    status, body, headers = req(server, "GET", f"/static/{health['version']}/events.js")
+    assert status == 200 and b"SharedWorker" in body and b"scope=all" in body
+    assert headers["Content-Type"].startswith("text/javascript")

@@ -18,6 +18,12 @@ API (JSON):
     GET    /api/events?scope=index|repo&slug=<slug>   Server-Sent Events: `hello`
                                           (the version) and `change`, whenever a
                                           file behind that page changes
+    GET    /api/events?scope=all          one stream for every page: `change`
+                                          carries {index, slugs}, the repositories
+                                          whose files changed. The pages share it
+                                          through a SharedWorker (events.js), since
+                                          a browser opens six connections per host
+                                          and a stream per tab would use them up
     POST   /api/shutdown                          token
     GET    /api/repos
     POST   /api/repos                             token: register {path, planning, name}
@@ -33,6 +39,10 @@ API (JSON):
     POST   /api/r/<slug>/comment/<id>             {on, text}
     PUT    /api/r/<slug>/order/<folder>           {ids}: the folder's items, in the
                                           order the user dragged them to
+    PUT    /api/r/<slug>/move/<id>                {folder, ids?}: move the item to
+                                          another lane if that folder's rules allow
+                                          it (409 and why, if not); ids is the new
+                                          lane's order with it
 
 Who may do what:
 
@@ -75,7 +85,7 @@ from .state import decision_local, plan_approval, satisfied, step_approval, summ
 from .types import ID_RE, STATE_FOLDERS, jsonable, plan_hash, plan_snapshot, step_hash, step_snapshot
 
 STATIC = Path(__file__).resolve().parent / "static"
-ASSETS = ("app.css", "app.js", "marked.min.js", "marked.LICENSE.md")
+ASSETS = ("app.css", "app.js", "events.js", "marked.min.js", "marked.LICENSE.md")
 MAX_BODY = 256 * 1024
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
        "connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
@@ -206,6 +216,11 @@ def repo_view(entry: dict, *, deep: bool = True) -> dict:
                                "folder": target.folder if target else None,
                                "done": satisfied(ref, it, ids)})
         s["needed_by"] = list(dict.fromkeys(needed_by.get(it.id, [])))
+        # The lanes it may be dragged to, and why not the others: the same
+        # rules `planning move` checks, so the page can refuse a drop up front.
+        if it.folder in STATE_FOLDERS:
+            s["moves"] = {lane: check_mod.folder_rules(it, lane, ans, plan_approval_required=f.plan_approval)
+                          for lane in STATE_FOLDERS if lane != it.folder}
         items.append(s)
         if s["for_user"]:
             waiting.append({"id": it.id, "title": it.title, "for_user": s["for_user"]})
@@ -446,17 +461,20 @@ class Handler(BaseHTTPRequestHandler):
         q = parse_qs(urlsplit(self.path).query)
         scope, slug = (q.get("scope") or ["index"])[0], (q.get("slug") or [""])[0]
 
-        def roots() -> list[Path]:
+        def signatures() -> dict[str, str]:
+            """A signature per repository behind the stream, and "" for the registry."""
             if scope == "repo":
                 entry = self.registry.by_slug(slug)
-                return [Path(entry["planning"])] if entry else []
-            return [Path(r["planning"]) for r in self.registry.repos]
+                return {slug: _tree_signature(Path(entry["planning"]))} if entry else {}
+            sigs = {r["slug"]: _tree_signature(Path(r["planning"])) for r in self.registry.repos}
+            sigs[""] = _etag(self.registry.path)
+            return sigs
 
-        def signature() -> str:
-            parts = [_tree_signature(r) for r in roots()]
-            if scope != "repo":
-                parts.append(_etag(self.registry.path))
-            return hashlib.sha256("|".join(parts).encode()).hexdigest()
+        def change(last: dict[str, str], now: dict[str, str]) -> bytes:
+            if scope != "all":
+                return b"{}"
+            slugs = sorted(k for k in last.keys() | now.keys() if k and last.get(k) != now.get(k))
+            return json.dumps({"index": True, "slugs": slugs}).encode()
 
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
@@ -468,13 +486,14 @@ class Handler(BaseHTTPRequestHandler):
         try:
             self.wfile.write(f"event: hello\ndata: {json.dumps({'version': self.version})}\n\n".encode())
             self.wfile.flush()
-            last, quiet = signature(), 0.0
+            last, quiet = signatures(), 0.0
             while not getattr(self.server, "stopping", False):
                 time.sleep(self.EVENT_TICK)
-                now = signature()
+                now = signatures()
                 if now != last:
+                    data = change(last, now)
                     last, quiet = now, 0.0
-                    self.wfile.write(b"event: change\ndata: {}\n\n")
+                    self.wfile.write(b"event: change\ndata: " + data + b"\n\n")
                     self.wfile.flush()
                 else:
                     quiet += self.EVENT_TICK
@@ -562,6 +581,8 @@ class Handler(BaseHTTPRequestHandler):
                 return None
             if api[2] == "order" and method == "PUT" and len(api) == 4:
                 return self._order_write(entry, api[3], body)
+            if api[2] == "move" and method == "PUT" and len(api) == 4:
+                return self._move(entry, api[3], body)
             return self._item_write(entry, method, api[2], api[3], api[4] if len(api) > 4 else None, body)
         return self._error(404, "not found")
 
@@ -590,6 +611,47 @@ class Handler(BaseHTTPRequestHandler):
             answers_mod.update(f.answers_path(iid), iid, change)
             changed += 1
         return self._json(200, {"saved": True, "changed": changed})
+
+    def _move(self, entry: dict, item_id: str, body: dict) -> None:
+        """Move an item to another lane, if that folder's rules allow it: what
+        `planning move` does. `ids`, if given, is the new lane's order with the
+        item in it, saved as the drag left it; otherwise the item goes last."""
+        to, ids = body.get("folder"), body.get("ids")
+        if to not in STATE_FOLDERS:
+            return self._error(400, f"folder must be one of {', '.join(STATE_FOLDERS)}")
+        if ids is not None and (not isinstance(ids, list) or not all(isinstance(i, str) for i in ids)
+                                or len(set(ids)) != len(ids)):
+            return self._error(400, "ids must be a list of item ids, each once")
+        f = _folder(entry)
+        it = f.get(item_id) if ID_RE.match(item_id) else None
+        if it is None:
+            return self._error(404, "no such item")
+        if it.folder == to:
+            return self._json(200, {"moved": False, "folder": to})
+        if it.folder not in STATE_FOLDERS:
+            return self._error(400, f"an item in {it.folder}/ does not move between lanes")
+        why = check_mod.folder_rules(it, to, f.answers(it.id), plan_approval_required=f.plan_approval)
+        if why:
+            return self._error(409, f"{it.id} cannot move to {to}/: " + "; ".join(why))
+        if ids is not None:
+            here = [x.id for x in f.items if x.folder == to and x.parsed and x.id]
+            if sorted(here + [it.id]) != sorted(ids):
+                return self._error(409, f"{to}/ has changed since the page was drawn; reload it")
+        try:
+            target = f.move(it, to)
+        except FileExistsError:
+            return self._error(409, f"{to}/ already has a file named {it.rel.split('/', 1)[1]}")
+        except (OSError, subprocess.SubprocessError) as e:
+            return self._error(500, f"the move failed: {e}")
+        if ids is not None:
+            for n, iid in enumerate(ids, 1):
+                if iid != it.id and folder_mod.rank(f.answers(iid), to) == n:
+                    continue
+
+                def change(d: dict, n=n) -> None:
+                    d["order"] = {"folder": to, "rank": n, "at": answers_mod.now()}
+                answers_mod.update(f.answers_path(iid), iid, change)
+        return self._json(200, {"moved": True, "folder": to, "file": target.relative_to(f.root).as_posix()})
 
     def _item_write(self, entry: dict, method: str, what: str, item_id: str, local: str | None,
                     body: dict) -> None:

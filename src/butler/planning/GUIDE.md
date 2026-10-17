@@ -132,7 +132,10 @@ lane, and the user drags the items into the order they want them done. The
 service keeps it in the items' answers files (`order`), and `planning list`,
 `status` and the page all show items in that order. Take work from `todo/`
 top-down. Moving an item to another folder starts it at the end of its new
-lane. A card also shows what its `needs` names and what needs it, so a plan's
+lane. The user can also drag a card to another lane: that is `planning move`,
+with the same folder rules, and it moves the file (with `git mv` when git
+tracks it). So an item's folder can change under you; read it again rather
+than assume where it is. A card also shows what its `needs` names and what needs it, so a plan's
 `needs` should list every plan that has to be done first.
 
 The top of every item's page is the user's to-do list, built from the files:
