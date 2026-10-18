@@ -1,15 +1,54 @@
 # Changelog
 
 All notable changes to this project are documented here.
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+
+Versions are calendar versions from the release after 0.11.0 on:
+`<year>.<month>.<n>`, n counting that month's releases from 1, the month
+without a leading zero (2026.10.1). A calendar version says when, not what
+changed, so read the section before bumping a pin. The 0.x versions before it
+stay as they were, and every tool orders 2026.10.1 after 0.11.0.
 
 A project pins the harness by tag in its `butler.py` (`HARNESS_REF`), so a tag
 here is what projects actually consume — keep these sections accurate before
 tagging. `butler.py --version` reports the version in use and the pin the
 project asked for.
 
-## [Unreleased]
+## [2026.10.1]
+
+The first calendar version. butler's `planning` is now the installed
+[waterrise](https://github.com/vaelum/waterrise).
+
+### Changed
+
+- **`python butler.py planning …` runs the installed waterrise.** The planning
+  code left the harness and is its own project, installed once per machine:
+  `git clone https://github.com/vaelum/waterrise.git && cd waterrise &&
+  python3 -m waterrise install` (`--boot` for a user unit that starts the
+  service at login). The command finds it (`$WATERRISE`, PATH,
+  `~/.local/bin/waterrise`), asks it whether it serves the version this harness
+  pins (`src/butler/waterrise_pin.py`, 2026.10.1 or later), and runs it with the
+  same arguments; output, exit codes and `[planning] dir` are as before. With
+  no waterrise, or one the check refuses, it says what is installed, what is
+  needed and the command above, and exits 1. `planning guide` is the installed
+  waterrise's guide, the same in every project, whatever its pin.
+- **The service is waterrise's.** It runs on the same port with the same
+  pages, its state is in `$XDG_STATE_HOME/waterrise/` (it imports
+  `$XDG_STATE_HOME/butler/planning/repos.json` on its first start), and a
+  project pinned to 0.9 to 0.11 that runs `planning serve` while it holds the
+  port is told the port is taken: bump the pin.
+- **Calendar versions.** From this release, `<year>.<month>.<n>`; the 0.x
+  versions stay as they were.
+
+### Added
+
+- `doctor` reports waterrise: where it is, and whether it serves the pin.
+- `release` refuses a version with a zero-padded part (`2026.09.1`): pip reads
+  it without the zero, and the tag and the wheel would disagree.
+
+### Removed
+
+- `src/butler/planning/` and its tests: they are waterrise's now.
 
 ## [0.11.0]
 

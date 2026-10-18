@@ -770,14 +770,30 @@ the run rather than losing whatever is there.
 
 ## `planning` — typed plans, and one local service for every repository
 
-Always present, like `doctor`. The full rules for writing plans are the agent
-guide, printed by `python butler.py planning guide`; this section is the
-reference for the command and its configuration.
+Always present, like `doctor`. The planning code is waterrise, installed once
+per machine; `python butler.py planning <command>` finds it (`$WATERRISE`, an
+executable or a checkout; else `waterrise` on PATH, `~/.local/bin/waterrise`,
+or its venv), asks it whether it serves this harness's pin
+(`waterrise install --check`, below), and execs it with the same arguments,
+the project's root, `[planning] dir`, the project's name, and
+`WATERRISE_PROG=python butler.py planning` in its environment, so its output
+reads as this command's always did. `doctor` reports it. The full rules for
+writing plans are the agent guide, printed by `python butler.py planning
+guide`; the rest of this section describes the folder waterrise reads.
 
 ```toml
 [planning]
 dir = "planning"   # the default; the only key
 ```
+
+### The pinned waterrise
+
+The planning code is its own project, waterrise
+(github.com/vaelum/waterrise), installed once per machine from its own
+checkout (`python -m waterrise install`); nothing here installs it. The
+harness names the version it was tested with in
+`src/butler/waterrise_pin.py` (`VERSION`), and `planning` asks the installed
+waterrise whether it serves that pin. Bumping it is a one-line commit.
 
 ### The folder
 

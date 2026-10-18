@@ -12,7 +12,7 @@ from . import command, components, config, doctor, tasks, ui
 from .command import Node
 from .context import Ctx
 from .errors import ButlerError
-from .planning import commands as planning_commands
+from . import planning
 
 PROG = "butler.py"
 
@@ -25,7 +25,7 @@ def build_tree(cfg: config.Config, project_tasks: list[tasks.Task]) -> list[Node
     roots = components.tree(cfg)
     roots.append(doctor.node())
     # Every project may have plans, so like doctor this is always there.
-    roots.append(planning_commands.node())
+    roots.append(planning.node())
     for name, milestone in sorted(cfg.planned.items()):
         roots.append(_planned(name, milestone))
     overlay(roots, project_tasks)
@@ -243,6 +243,23 @@ def main(argv: list[str] | None = None, *, root: Path | None = None) -> int:
     except ButlerError as e:
         ui.err(e.message, e.hint)
         return e.code
+
+    # `planning` hands everything after it to waterrise, its --help included,
+    # so argparse never sees those arguments.
+    first = next((i for i, a in enumerate(argv) if not a.startswith("-")), None)
+    if first is not None and argv[first] == "planning" and \
+            next(n for n in roots if n.name == "planning").func is planning.run:
+        flags = _global_flags().parse_known_args(argv[:first])[0]
+        for flag in ("verbose", "dry_run", "no_color", "yes"):
+            setattr(flags, flag, getattr(flags, flag, False))
+        ui.init(flags.no_color)
+        flags.waterrise_args = argv[first + 1:]
+        ctx = Ctx(cfg=cfg, dry_run=flags.dry_run, verbose=flags.verbose, assume_yes=flags.yes, args=flags)
+        try:
+            return planning.run(ctx, flags)
+        except ButlerError as e:
+            ui.err(e.message, e.hint)
+            return e.code
 
     if argv and not argv[0].startswith("-") and not any(n.name == argv[0] for n in roots):
         hint = suggest(argv[0], roots, cfg)

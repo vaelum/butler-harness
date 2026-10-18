@@ -107,6 +107,13 @@ def _split_version(cfg: ReleaseConfig, given: str) -> tuple[str, str]:
         version = version[len(cfg.tag_prefix):]
     if not version:
         raise ButlerError(f"{given!r} is not a version")
+    # pip reads 2026.09.1 as 2026.9.1 and names the wheel so; the tag would
+    # not be the version the release builds. Cargo's versions refuse it outright.
+    padded = [p for p in version.split("-")[0].split("+")[0].split(".") if len(p) > 1 and p.isdigit() and p[0] == "0"]
+    if padded:
+        raise ButlerError(f"{version}: a version part with a leading zero ({', '.join(padded)}) is read "
+                          "without it by pip, so the tag and the build would disagree",
+                          hint=f"write {'.'.join(str(int(p)) if p.isdigit() else p for p in version.split('.'))}")
     return version, cfg.tag_for(version)
 
 

@@ -174,6 +174,14 @@ def _server(ctx: Ctx) -> list[Check]:
     return checks
 
 
+def _planning() -> list[Check]:
+    """waterrise, which `planning` runs: installed, and serving this harness's pin."""
+    from . import planning
+
+    found, said = planning.status()
+    return [Check("waterrise", found, said, required=False)]
+
+
 def run(ctx: Ctx, args) -> int:
     groups = [
         ("general", _general()),
@@ -182,6 +190,7 @@ def run(ctx: Ctx, args) -> int:
         ("server", _server(ctx)),
         ("build", _build(ctx)),
         ("check", _check_tools(ctx)),
+        ("planning", _planning()),
     ]
     missing_required = 0
     for title, checks in groups:

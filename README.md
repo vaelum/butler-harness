@@ -23,12 +23,13 @@ Compose or the project's own scripts), `extension` (Chrome + Firefox bundles),
 `build` (CMake + Docker buildenv), `check` (MegaLinter + clang-tidy),
 `publish` (Copybara export to a public mirror), `release` (squash, tag, wait
 for the build, export), plus `doctor` and `planning` (typed plans, decisions and
-approvals, served for every repository by one local service).
+approvals, served for every repository by one local service: the installed
+[waterrise](https://github.com/vaelum/waterrise), run for this project).
 
 - [docs/new-project.md](docs/new-project.md) — adding a butler to a project
 - [docs/components.md](docs/components.md) — every config key and command
 - `python butler.py planning guide` — how to write and keep plans (for agents
-  and people), shipped with the harness
+  and people), shipped with the installed waterrise
 
 ## The shape of it
 

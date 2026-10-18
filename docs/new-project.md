@@ -207,6 +207,8 @@ tag the harness and bump `HARNESS_REF` in the projects that should move.
 ## 8. Upgrading a project
 
 The harness version is pinned by `HARNESS_REF` in `butler.py` and nothing else.
+Its versions are calendar versions, `v<year>.<month>.<n>` (after the 0.x ones,
+which end at v0.11.0), so a newer pin says when, and the CHANGELOG says what.
 Bump it, run any command, and the shim builds a new cached venv for that ref —
 the old one stays where it is, so other projects on the old pin are unaffected
 and rolling back is a one-line edit.

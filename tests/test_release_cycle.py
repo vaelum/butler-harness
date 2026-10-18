@@ -108,6 +108,15 @@ def test_a_version_is_taken_with_or_without_its_prefix():
     assert release_cycle._split_version(cfg, "v1.2.3") == ("1.2.3", "v1.2.3")
 
 
+def test_a_calendar_version_is_taken_and_a_padded_one_refused():
+    cfg = parse().release
+    assert release_cycle._split_version(cfg, "2026.10.1") == ("2026.10.1", "v2026.10.1")
+    assert release_cycle._split_version(cfg, "v2026.9.2") == ("2026.9.2", "v2026.9.2")
+    with pytest.raises(ButlerError, match="leading zero") as e:
+        release_cycle._split_version(cfg, "2026.09.1")
+    assert "write 2026.9.1" in e.value.hint
+
+
 CHANGELOG = """# Changelog
 
 ## [1.2.3]
