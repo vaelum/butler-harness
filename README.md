@@ -29,7 +29,8 @@ approvals, served for every repository by one local service: the installed
 - [docs/new-project.md](docs/new-project.md) — adding a butler to a project
 - [docs/components.md](docs/components.md) — every config key and command
 - `python butler.py planning guide` — how to write and keep plans (for agents
-  and people), shipped with the installed waterrise
+  and people), shipped with the installed waterrise; `python butler.py planning
+  install` installs the version the harness pins
 
 ## The shape of it
 
@@ -51,6 +52,7 @@ butler.py server dev | down | logs | test | deploy
 butler.py extension package
 butler.py release 1.2.3 --check
 butler.py doctor
+butler.py planning install      # the pinned waterrise, on this machine
 butler.py planning serve        # typed plans in the browser, every repository at once
 ```
 

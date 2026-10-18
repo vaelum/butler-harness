@@ -6,7 +6,7 @@ whether it serves it (`waterrise install --check`). Bumping it is a one-line
 commit, tested like any other change.
 """
 
-VERSION = "2026.10.1"
+VERSION = "2026.10.3"
 
 
 def pinned() -> str:

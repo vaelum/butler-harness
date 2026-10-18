@@ -14,6 +14,31 @@ here is what projects actually consume — keep these sections accurate before
 tagging. `butler.py --version` reports the version in use and the pin the
 project asked for.
 
+## [2026.10.2]
+
+### Added
+
+- **`python butler.py planning install` installs the pinned waterrise.** It
+  clones github.com/vaelum/waterrise into the harness's cache
+  (`$XDG_CACHE_HOME/butler/waterrise`, beside the shim's venvs; a later run
+  fetches), checks out the pin's tag, runs that checkout's installer
+  (`python3 -m waterrise install`, so waterrise's venv and
+  `~/.local/bin/waterrise`; `--boot` adds the user unit), and confirms the
+  result passes the pin check. The clone is the checkout waterrise remembers
+  from then on, so a bare `waterrise install` reinstalls the same version;
+  `python3 -m waterrise install` in a checkout of your own takes that over.
+  waterrise's other `install` switches stay waterrise's. The hints of
+  `planning` and `doctor` for a missing or too-old waterrise name this command.
+  Run it again after a release bumps the pin.
+
+### Changed
+
+- **The pinned waterrise is 2026.10.3** (was 2026.10.1): the two homes for a
+  project's plans (repo or central) and reports, the pages in vaelum.dev's dark
+  look, and a draft/finished state for notes and reports. `planning` refuses an
+  older install and says how to update it.
+- New projects start pinned to v2026.10.2 (`butler new`).
+
 ## [2026.10.1]
 
 The first calendar version. butler's `planning` is now the installed

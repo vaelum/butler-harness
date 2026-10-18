@@ -777,8 +777,9 @@ or its venv), asks it whether it serves this harness's pin
 (`waterrise install --check`, below), and execs it with the same arguments,
 the project's root, `[planning] dir`, the project's name, and
 `WATERRISE_PROG=python butler.py planning` in its environment, so its output
-reads as this command's always did. `doctor` reports it. The full rules for
-writing plans are the agent guide, printed by `python butler.py planning
+reads as this command's always did. `doctor` reports it, and `python butler.py
+planning install` puts the pinned one on the machine (below). The full rules
+for writing plans are the agent guide, printed by `python butler.py planning
 guide`; the rest of this section describes the folder waterrise reads.
 
 ```toml
@@ -789,11 +790,24 @@ dir = "planning"   # the default; the only key
 ### The pinned waterrise
 
 The planning code is its own project, waterrise
-(github.com/vaelum/waterrise), installed once per machine from its own
-checkout (`python -m waterrise install`); nothing here installs it. The
-harness names the version it was tested with in
-`src/butler/waterrise_pin.py` (`VERSION`), and `planning` asks the installed
-waterrise whether it serves that pin. Bumping it is a one-line commit.
+(github.com/vaelum/waterrise), installed once per machine from a checkout of
+it (`python3 -m waterrise install`). The harness names the version it was
+tested with in `src/butler/waterrise_pin.py` (`VERSION`), and `planning` asks
+the installed waterrise whether it serves that pin. Bumping it is a one-line
+commit.
+
+`python butler.py planning install` installs that version: it clones the
+public repository into the harness's cache (`$XDG_CACHE_HOME/butler/waterrise`,
+beside the shim's venvs; a later run fetches), checks out the pin's tag, and
+runs that checkout's installer — waterrise's own venv and `~/.local/bin/waterrise`,
+with `--boot` the systemd user unit that starts the service at login — then
+confirms the install passes the pin check. The clone becomes the checkout
+waterrise remembers, so a bare `waterrise install` afterwards reinstalls the
+same version; `python3 -m waterrise install` in a checkout of your own takes
+that over again. Every other `install` switch (`--check`, `--uninstall`,
+`--no-boot`, `--from`) is the installed waterrise's: `waterrise install --help`.
+With no waterrise, or one older than the pin, `planning` and `doctor` name
+this command.
 
 ### The folder
 
@@ -824,6 +838,7 @@ with its source.
 
 | command | does | service |
 |---|---|---|
+| `install [--boot]` | the harness's own: clone and install the pinned waterrise (above) | no |
 | `init` | `planning.toml`, the folders, the schema | no |
 | `new KIND NAME [--title T] [--folder F]` | a new item with a fresh id | no |
 | `check [--strict] [--all] [--no-git] [--json]` | validate the folder; exit 1 on an error | no |

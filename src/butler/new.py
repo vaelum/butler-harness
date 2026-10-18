@@ -29,7 +29,7 @@ TEMPLATES = Path(__file__).resolve().parent / "templates"
 # projects nobody but their author could build. `butler publish` rewrites this
 # line on the way out.
 DEFAULT_URL = "git+https://github.com/vaelum/butler-harness.git"
-DEFAULT_REF = "v2026.10.1"
+DEFAULT_REF = "v2026.10.2"
 
 APP_SECTION = """
 [app]

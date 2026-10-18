@@ -47,7 +47,9 @@ python butler.py doctor
 `doctor` reports every tool the declared components need — git, docker, cargo,
 `cargo tauri`, the Android SDK/NDK/JDK, build-tools, adb, attached devices, the
 signing keystore, the server venv — and says what's missing rather than letting
-a build discover it ten minutes in. Run it first on any new machine.
+a build discover it ten minutes in. Run it first on any new machine. It also
+reports waterrise, which `planning` runs; a machine without it, or with one
+older than the harness pins, gets it with `python butler.py planning install`.
 
 ## 3. Describe the project
 
