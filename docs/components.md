@@ -588,10 +588,9 @@ quietly matches nothing.
 
 ### The harness pin
 
-A generated `butler.py` pins the harness at
-`git+https://github.com/vaelum/butler-harness.git`, which nobody outside can
-reach — so a mirror shipping that shim is not buildable by anyone but its
-author. With `rewrite_harness` on, the exported copy is repointed at the public
+A generated `butler.py` pins the harness at the author's own Forgejo, over
+SSH, which nobody outside can reach — so a mirror shipping that shim is not
+buildable by anyone but its author. With `rewrite_harness` on, the exported copy is repointed at the public
 harness, and Forgejo web links in Markdown become their GitHub equivalents —
 `harness_forgejo` first if set, since that mirror is renamed, then the rest
 path-for-path. Your own checkout is untouched,

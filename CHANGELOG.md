@@ -14,6 +14,16 @@ here is what projects actually consume — keep these sections accurate before
 tagging. `butler.py --version` reports the version in use and the pin the
 project asked for.
 
+## [2026.10.3]
+
+### Fixed
+
+- **docs/components.md no longer contradicts itself on the mirror.** "The
+  harness pin" named the private pin URL, which the export's own rewrite turned
+  into the public one, so the mirror's copy said the GitHub URL was the one
+  nobody outside can reach. The paragraph now describes the private pin
+  without spelling it out.
+
 ## [2026.10.2]
 
 ### Added
