@@ -881,7 +881,7 @@ lock, probes again and starts it detached — `python -P`, with the state
 directory as cwd, never `-m butler` from a project root, whose `butler/` folder
 would shadow the package. A service with an older API level is stopped and
 replaced; the registry is on disk, so nothing is lost. A worktree registers as
-itself (`lifestack-w0-cli`) and is grouped under its main checkout.
+itself (`acme-w0-cli`) and is grouped under its main checkout.
 
 State lives in `$XDG_STATE_HOME/butler/planning/`: `service.json`,
 `repos.json`, `token` (0600), `service.log` (rotated at 1 MB).

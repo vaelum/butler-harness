@@ -14,6 +14,14 @@ here is what projects actually consume — keep these sections accurate before
 tagging. `butler.py --version` reports the version in use and the pin the
 project asked for.
 
+## [2026.10.5]
+
+### Fixed
+
+- **docs/components.md names no project of the author's as an example.** The
+  planning service's worktree example was a real project's worktree; it is
+  `acme-w0-cli` now, like the docs' other examples.
+
 ## [2026.10.4]
 
 ### Fixed
