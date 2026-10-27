@@ -12,8 +12,8 @@ From the project root:
 butler new . --app --server --tasks
 ```
 
-(If the harness isn't installed anywhere yet, run it out of the checkout:
-`python path/to/butler/src/butler/new.py . --app --server`.)
+(If the harness isn't installed anywhere yet, run it out of a checkout:
+`PYTHONPATH=path/to/butler/src python3 -m butler new . --app --server`.)
 
 That writes three files:
 

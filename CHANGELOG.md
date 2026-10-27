@@ -14,6 +14,15 @@ here is what projects actually consume — keep these sections accurate before
 tagging. `butler.py --version` reports the version in use and the pin the
 project asked for.
 
+## [2026.10.4]
+
+### Fixed
+
+- **docs/new-project.md gives a scaffold command that runs.** Without an
+  installed harness it said to run `src/butler/new.py` as a script, which stops
+  at its first relative import; it now says
+  `PYTHONPATH=path/to/butler/src python3 -m butler new .`.
+
 ## [2026.10.3]
 
 ### Fixed
